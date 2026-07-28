@@ -12,15 +12,17 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from baselines.mappo import MAPPOAgent
 from baselines.offloading_baselines import LocalOnlyAgent
 from run_comparision import (
-    _build_plot_results,
-    _build_model_checkpoint,
     _episodes_for_algorithm,
     _format_diagnostic_summary,
-    _last_training_state_line,
-    _save_model_checkpoint,
     _should_print_diagnostics,
     _summarize_step_metrics,
     build_algorithm_configs,
+)
+from utils.comparison_outputs import (
+    _save_model_checkpoint,
+    build_last_training_state_line,
+    build_model_checkpoint,
+    build_plot_results,
 )
 from utils.paper_config import PAPER_PARAMS
 
@@ -88,7 +90,10 @@ def test_format_diagnostic_summary_is_readable() -> None:
     assert "Requested actions: local=2329 edge=171" in summary
     assert "Actual execution:  local=2480 edge=20" in summary
     assert "Penalties:         count=151 time=0.856s" in summary
-    assert "Timing avg/step:   local=2.750s server=0.081s transfer=0.210s wait=0.440s" in summary
+    assert (
+        "Timing/device-task: local=2.750s server=0.081s "
+        "transfer=0.210s wait=0.440s"
+    ) in summary
 
 
 def test_short_run_diagnostics_print_only_on_final_episode() -> None:
@@ -120,8 +125,9 @@ def test_learning_algorithm_kwargs_use_config_values() -> None:
     assert configs["MAPPO"]["kwargs"]["ppo_epochs"] == int(
         provisional["mappo_ppo_epochs"]
     )
+    assert configs["MAPPO"]["kwargs"]["use_action_mask"] is False
     assert (
-        configs["MAPPO"]["kwargs"]["use_action_mask"]
+        configs["Mask-MAPPO"]["kwargs"]["use_action_mask"]
         == provisional["mappo_use_action_mask"]
     )
     assert configs["Graph-GAT MAPPO"]["kwargs"]["gamma"] == provisional["gamma"]
@@ -131,8 +137,9 @@ def test_learning_algorithm_kwargs_use_config_values() -> None:
     assert configs["Graph-GAT MAPPO"]["kwargs"]["embedding_dim"] == int(
         provisional["graph_gat_embedding_dim"]
     )
+    assert configs["Graph-GAT MAPPO"]["kwargs"]["use_action_mask"] is False
     assert (
-        configs["Graph-GAT MAPPO"]["kwargs"]["use_action_mask"]
+        configs["Graph-GAT Mask MAPPO"]["kwargs"]["use_action_mask"]
         == provisional["graph_gat_use_action_mask"]
     )
 
@@ -150,7 +157,11 @@ def test_fixed_baseline_plot_results_are_mean_flat_lines() -> None:
         },
     }
 
-    plot_results = _build_plot_results(raw_results, target_episodes=5)
+    plot_results = build_plot_results(
+        raw_results,
+        target_episodes=5,
+        fixed_baseline_algorithms=frozenset({"Local Only"}),
+    )
 
     assert plot_results["reward"]["Local Only"] == pytest.approx([2.0] * 5)
     assert plot_results["delay"]["Local Only"] == pytest.approx([3.0] * 5)
@@ -178,7 +189,7 @@ def test_last_training_state_line_is_flat_for_easy_comparison() -> None:
         "resolved_edge_count": [190.0, 63.0],
     }
 
-    line = _last_training_state_line("MAPPO", history, episode_count=1000)
+    line = build_last_training_state_line("MAPPO", history, episode_count=1000)
 
     assert line == {
         "model": "MAPPO",
@@ -200,6 +211,9 @@ def test_last_training_state_line_is_flat_for_easy_comparison() -> None:
         "wait_time_s": pytest.approx(1.357),
         "penalty_count": 0,
         "penalty_time_s": pytest.approx(0.0),
+        "graph_warmup_time_s": pytest.approx(0.0),
+        "graph_warmup_loss": pytest.approx(0.0),
+        "graph_warmup_count": 0,
     }
 
 
@@ -207,7 +221,7 @@ def test_fixed_baseline_does_not_create_model_checkpoint() -> None:
     """Rule-based baselines should not save empty model checkpoints."""
     agent = LocalOnlyAgent(state_dim=4, action_dim=3, num_agents=1)
 
-    checkpoint = _build_model_checkpoint(
+    checkpoint = build_model_checkpoint(
         algo_name="Local Only",
         agents=[agent],
         agent_config={"class": LocalOnlyAgent, "kwargs": {}},
@@ -226,7 +240,7 @@ def test_mappo_checkpoint_contains_agent_weights_and_metadata() -> None:
     """Trainable checkpoints should include weights, config, and dimensions."""
     agent = MAPPOAgent(state_dim=4, action_dim=3, num_agents=1)
 
-    checkpoint = _build_model_checkpoint(
+    checkpoint = build_model_checkpoint(
         algo_name="MAPPO",
         agents=[agent],
         agent_config={"class": MAPPOAgent, "kwargs": {"lr": 0.0001}},

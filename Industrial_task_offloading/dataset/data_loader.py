@@ -34,7 +34,12 @@ class KolektorSDDLoader:
 
         for root, _, files in os.walk(self.dataset_path):
             for file in files:
-                if file.lower().endswith(valid_extensions):
+                file_stem, file_extension = os.path.splitext(file.lower())
+                is_input_image = (
+                    file_extension in valid_extensions
+                    and not file_stem.endswith("_label")
+                )
+                if is_input_image:
                     image_paths.append(os.path.join(root, file))
                     
         return image_paths

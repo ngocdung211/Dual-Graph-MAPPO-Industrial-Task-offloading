@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from environment.digital_twin import DigitalTwin, DigitalTwinSnapshot
 from environment.network_env import NetworkEnvironment
 from environment.system_model import EdgeServer, IndustrialDevice, Subtask, TaskDAG
 
@@ -68,6 +69,11 @@ class DITENEnv:
         self.p_out_value: float = p_out_value
         self.local_estimation_error: float = max(0.0, local_estimation_error)
         self.edge_estimation_error: float = max(0.0, edge_estimation_error)
+        self.digital_twin = DigitalTwin(
+            local_estimation_error=self.local_estimation_error,
+            edge_estimation_error=self.edge_estimation_error,
+        )
+        self.digital_twin_snapshot: Optional[DigitalTwinSnapshot] = None
         self.strict_connection_window: bool = bool(strict_connection_window)
 
         self.device_accumulated_delay: Dict[int, float] = {}
@@ -121,6 +127,8 @@ class DITENEnv:
         self.local_finish_time = {}
         self.server_finish_time = {}
         self.last_step_metrics = []
+        self.digital_twin.reset()
+        self.digital_twin_snapshot = None
 
         for device in self.devices:
             waypoint_index = self.device_waypoint_idx[device.id]
@@ -189,11 +197,18 @@ class DITENEnv:
             }
         self.last_step_metrics = []
 
+        self.digital_twin_snapshot = self.digital_twin.synchronize(
+            self.devices,
+            self.servers,
+            time_slot_index=self.current_slot_index,
+        )
         self.device_estimated_power = {
-            d.id: self._sample_estimated_power(d.compute_power, self.local_estimation_error) for d in self.devices
+            device_id: state.estimated_compute_power
+            for device_id, state in self.digital_twin_snapshot.device_states.items()
         }
         self.server_estimated_power = {
-            s.id: self._sample_estimated_power(s.compute_power, self.edge_estimation_error) for s in self.servers
+            server_id: state.estimated_compute_power
+            for server_id, state in self.digital_twin_snapshot.server_states.items()
         }
 
         self._update_connection_windows()
@@ -424,13 +439,26 @@ class DITENEnv:
                 if (not within_window) and self.strict_connection_window:
                     # Reject invalid offload and fallback to local execution with penalty.
                     device = item["device"]
+                    (
+                        predecessor_ready_time,
+                        tx_energy,
+                        transfer_time,
+                    ) = self._resolve_predecessor_ready_time(
+                        device=device,
+                        task_dag=item["task_dag"],
+                        current_subtask_id=item["subtask_id"],
+                        action=0,
+                    )
+                    item["predecessor_ready_time"] = predecessor_ready_time
+                    item["tx_energy"] = tx_energy
+                    item["transfer_time"] = transfer_time
                     local_est_power = self.device_estimated_power[device.id]
                     local_actual_power = device.compute_power
                     local_time, local_energy = self.network_env.calculate_local_computation(
                         subtask.cpu_cycles, device.energy_coeff, local_est_power, local_actual_power
                     )
                     local_wait = max(0.0, local_finish_snapshot[device.id] - self.current_slot)
-                    local_start = max(self.current_slot + local_wait, item["predecessor_ready_time"])
+                    local_start = max(self.current_slot + local_wait, predecessor_ready_time)
                     local_finish = local_start + local_time
                     local_finish_snapshot[device.id] = local_finish
                     item["rejected"] = True
@@ -552,7 +580,12 @@ class DITENEnv:
             self.device_accumulated_energy[device.id] += instant_energy
 
             reward = self._calculate_reward(
-                instant_delay, instant_energy, accum_delay, accum_energy, item["p_out"], task_dag
+                instant_delay,
+                instant_energy,
+                self.slot_accumulated_delay[device.id],
+                self.slot_accumulated_energy[device.id],
+                item["p_out"],
+                task_dag,
             )
             rewards.append(reward)
             self.last_step_metrics.append(
@@ -871,22 +904,6 @@ class DITENEnv:
         self.device_waypoint_idx[device.id] = waypoint_index
         next_index = (waypoint_index + 1) % len(waypoints)
         device.set_direction(waypoints[next_index] - device.location)
-
-    def _sample_estimated_power(self, actual_power: float, error_ratio: float) -> float:
-        """Return a noisy estimate of computing power.
-
-        Args:
-            actual_power: Actual computing power.
-            error_ratio: Relative estimation error.
-
-        Returns:
-            Estimated computing power.
-        """
-        if error_ratio == 0.0:
-            return actual_power
-        noise = np.random.uniform(-error_ratio, error_ratio)
-        estimated = actual_power * (1.0 + noise)
-        return max(1e-9, estimated)
 
     def _compute_waiting_delay_local(self, device: IndustrialDevice) -> float:
         """Return queueing delay at the local device.

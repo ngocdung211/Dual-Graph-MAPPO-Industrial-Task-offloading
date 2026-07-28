@@ -31,6 +31,7 @@ tests/
 tests/*
 !tests/test_gpu_readiness.py
 !tests/test_experiment_tracking.py
+!tests/test_digital_twin.py
 plots/
 wandb/
 paper/

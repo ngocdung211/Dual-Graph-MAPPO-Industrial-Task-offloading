@@ -104,5 +104,5 @@ pytest tests/test_gpu_readiness.py tests/test_graph_gat_mappo.py -q
 ```
 
 After the smoke run succeeds, repeat it on `medium_20d_6s` and
-`large_30d_10s`, record Graph-GAT action/update time, and compare against the
+`large_30d_9s`, record Graph-GAT action/update time, and compare against the
 same command with `--graph-gat-device cpu`.

@@ -77,18 +77,8 @@ class NetworkEnvironment:
         Returns:
             Tuple of (actual_delay, energy_consumption).
         """
-        power_delta = f_actual - f_est
-        
-        # Estimated and actual execution delays
-        # Guard against division by zero if deviation is extremely large (optional but recommended)
-        # if f_est == f_deviation:
-        #     delta_t_loc = 0
-        # else:
-        #     delta_t_loc = cpu_cycles * f_deviation / (f_est * (f_est - f_deviation))
-
-        estimated_delay = cpu_cycles / f_est
-        delta_delay = cpu_cycles * power_delta / (f_est * (f_est - power_delta))
-        actual_delay = estimated_delay + delta_delay
+        del f_est
+        actual_delay = cpu_cycles / f_actual
         
         # Energy consumption of local computation
         energy_consumption = energy_coeff * cpu_cycles * (f_actual ** 2)
@@ -109,15 +99,10 @@ class NetworkEnvironment:
         Returns:
             Tuple of (actual_delay, energy_consumption).
         """
-        power_delta = f_actual - f_est
+        del f_est
+        actual_delay = cpu_cycles / f_actual
         
-        # Estimated and actual execution delays
-        estimated_delay = cpu_cycles / f_est
-        delta_delay = cpu_cycles * power_delta / (f_est * (f_est - power_delta))
-        actual_delay = estimated_delay + delta_delay
-        
-        # Energy consumption of edge computation
-        energy_consumption = energy_coeff * cpu_cycles * (f_actual ** 2)
-        
-        energy_consumption = 0 # --- IGNORE THIS LINE FOR NOW, SETTING EDGE COMPUTATION ENERGY TO ZERO FOR SIMPLICITY ---
+        # Edge-server computation energy is intentionally outside the objective.
+        del energy_coeff
+        energy_consumption = 0.0
         return actual_delay, energy_consumption

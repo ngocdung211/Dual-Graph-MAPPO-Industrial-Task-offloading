@@ -49,7 +49,11 @@ def get_priority_checkpoint_path(model_name: str) -> str:
 
 
 def build_task_dag(
-    task_id: int, task_params: Dict[str, Dict[str, float]], t_max: float = 1.0, e_max: float = 1.0
+    task_id: int,
+    task_params: Dict[str, Dict[str, float]],
+    t_max: float = 1.0,
+    e_max: float = 1.0,
+    cpu_cycle_scale: float = 1.0,
 ) -> TaskDAG:
     """Build a TaskDAG from task parameters.
 
@@ -58,6 +62,7 @@ def build_task_dag(
         task_params: Subtask parameter mapping.
         t_max: Maximum tolerable delay.
         e_max: Maximum tolerable energy.
+        cpu_cycle_scale: Multiplier applied to every subtask's CPU demand.
 
     Returns:
         Constructed TaskDAG instance.
@@ -66,7 +71,12 @@ def build_task_dag(
     for subtask_id in range(1, 6):
         params = task_params[f"subtask_{subtask_id}"]
         task_dag.add_subtask(
-            Subtask(subtask_id, params["cpu_cycles"], params["data_size"], params["result_size"])
+            Subtask(
+                subtask_id,
+                params["cpu_cycles"] * cpu_cycle_scale,
+                params["data_size"],
+                params["result_size"],
+            )
         )
     for pred, succ in DEFAULT_DAG_EDGES:
         task_dag.add_dependency(pred, succ)
@@ -74,7 +84,11 @@ def build_task_dag(
 
 
 def generate_task_dags_for_episode(
-    devices: List[IndustrialDevice], data_loader: KolektorSDDLoader, t_max: float = 1.0, e_max: float = 1.0
+    devices: List[IndustrialDevice],
+    data_loader: KolektorSDDLoader,
+    t_max: float = 1.0,
+    e_max: float = 1.0,
+    cpu_cycle_scale: float = 1.0,
 ) -> Dict[int, TaskDAG]:
     """Generate a TaskDAG per device for a single episode.
 
@@ -83,6 +97,7 @@ def generate_task_dags_for_episode(
         data_loader: Dataset loader for random task parameters.
         t_max: Maximum tolerable delay.
         e_max: Maximum tolerable energy.
+        cpu_cycle_scale: Multiplier applied to every subtask's CPU demand.
 
     Returns:
         Mapping of device IDs to TaskDAGs.
@@ -90,7 +105,13 @@ def generate_task_dags_for_episode(
     task_dags: Dict[int, TaskDAG] = {}
     for device in devices:
         task_params = data_loader.get_random_task_parameters()
-        task_dags[device.id] = build_task_dag(device.id, task_params, t_max=t_max, e_max=e_max)
+        task_dags[device.id] = build_task_dag(
+            device.id,
+            task_params,
+            t_max=t_max,
+            e_max=e_max,
+            cpu_cycle_scale=cpu_cycle_scale,
+        )
     return task_dags
 
 
@@ -117,7 +138,10 @@ def build_priorities(
 
 
 def make_priority_dag_sampler(
-    data_loader: KolektorSDDLoader, t_max: float = 1.0, e_max: float = 1.0
+    data_loader: KolektorSDDLoader,
+    t_max: float = 1.0,
+    e_max: float = 1.0,
+    cpu_cycle_scale: float = 1.0,
 ) -> Callable[[], TaskDAG]:
     """Create a callable that samples TaskDAGs for priority-model training.
 
@@ -125,12 +149,19 @@ def make_priority_dag_sampler(
         data_loader: Dataset loader for random task parameters.
         t_max: Maximum tolerable delay.
         e_max: Maximum tolerable energy.
+        cpu_cycle_scale: Multiplier applied to every subtask's CPU demand.
 
     Returns:
         Callable that returns a TaskDAG.
     """
     def _sampler() -> TaskDAG:
         task_params = data_loader.get_random_task_parameters()
-        return build_task_dag(task_id=0, task_params=task_params, t_max=t_max, e_max=e_max)
+        return build_task_dag(
+            task_id=0,
+            task_params=task_params,
+            t_max=t_max,
+            e_max=e_max,
+            cpu_cycle_scale=cpu_cycle_scale,
+        )
 
     return _sampler

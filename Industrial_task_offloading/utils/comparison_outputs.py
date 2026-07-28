@@ -15,7 +15,7 @@ from utils.plotter2 import DITENPlotter2
 def flatten_topology_metrics(topology_metrics: Dict[str, object]) -> Dict[str, object]:
     """Flatten topology metrics for JSONL/checkpoint metadata."""
     route_samples = topology_metrics["route_samples"]
-    return {
+    flattened = {
         "topology_scenario": topology_metrics["name"],
         "topology_num_devices": topology_metrics["num_devices"],
         "topology_num_servers": topology_metrics["num_servers"],
@@ -26,6 +26,10 @@ def flatten_topology_metrics(topology_metrics: Dict[str, object]) -> Dict[str, o
         "topology_multi_link_ratio": route_samples["multi_link_ratio"],
         "topology_device_server_ratio": route_samples["device_server_ratio"],
     }
+    physical_compute = topology_metrics.get("physical_compute")
+    if physical_compute is not None:
+        flattened.update(physical_compute)
+    return flattened
 
 
 def build_plot_results(
@@ -45,6 +49,50 @@ def build_plot_results(
             else:
                 plot_results[metric_name][algo_name] = list(history)
     return plot_results
+
+
+def build_plot_diagnostics(
+    last_training_state_rows: Sequence[Dict[str, object]],
+) -> tuple[List[str], List[List[str]]]:
+    """Build a compact final-episode diagnostics table for output plots.
+
+    Edge requested/executed percentages use all actions as the denominator.
+    Rejection percentage uses requested edge actions as the denominator.
+    """
+    headers = [
+        "Model",
+        "Edge requested",
+        "Edge executed",
+        "Rejected edge",
+        "Time breakdown",
+    ]
+    diagnostic_rows = []
+    for row in last_training_state_rows:
+        requested_local = int(row.get("requested_local_count", 0))
+        requested_edge = int(row.get("requested_edge_count", 0))
+        resolved_local = int(row.get("resolved_local_count", 0))
+        resolved_edge = int(row.get("resolved_edge_count", 0))
+        penalty_count = int(row.get("penalty_count", 0))
+        requested_total = requested_local + requested_edge
+        resolved_total = resolved_local + resolved_edge
+        requested_edge_percent = 100.0 * requested_edge / max(requested_total, 1)
+        resolved_edge_percent = 100.0 * resolved_edge / max(resolved_total, 1)
+        rejection_percent = 100.0 * penalty_count / max(requested_edge, 1)
+        diagnostic_rows.append(
+            [
+                str(row.get("model", "Unknown")),
+                f"{requested_edge} ({requested_edge_percent:.1f}%)",
+                f"{resolved_edge} ({resolved_edge_percent:.1f}%)",
+                f"{penalty_count} ({rejection_percent:.1f}% req.)",
+                (
+                    f"{float(row.get('local_time_s', 0.0)):.3f} / "
+                    f"{float(row.get('server_time_s', 0.0)):.3f} / "
+                    f"{float(row.get('transfer_time_s', 0.0)):.3f} / "
+                    f"{float(row.get('wait_time_s', 0.0)):.3f}"
+                ),
+            ]
+        )
+    return headers, diagnostic_rows
 
 
 def build_last_training_state_line(
@@ -169,6 +217,7 @@ def save_comparison_outputs(
     model_checkpoints: Sequence[Dict[str, Any]],
     fixed_baseline_algorithms: frozenset[str],
     experiment_note: str = "",
+    topology_scenario: Optional[str] = None,
 ) -> Dict[str, object]:
     """Save plots, final JSONL rows, and model checkpoints."""
     date_string = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
@@ -180,7 +229,17 @@ def save_comparison_outputs(
         target_episodes=full_episodes,
         fixed_baseline_algorithms=fixed_baseline_algorithms,
     )
-    plot_paths = _save_training_plots(plotter, plot_results, date_string)
+    diagnostic_headers, diagnostic_rows = build_plot_diagnostics(
+        last_training_state_rows
+    )
+    plot_paths = _save_training_plots(
+        plotter,
+        plot_results,
+        date_string,
+        topology_scenario,
+        diagnostic_headers=diagnostic_headers,
+        diagnostic_rows=diagnostic_rows,
+    )
     last_state_path = os.path.join(
         plotter.save_dir, f"{date_string}_last_training_state.jsonl"
     )
@@ -273,21 +332,40 @@ def _save_training_plots(
     plotter: DITENPlotter2,
     plot_results: Dict[str, Dict[str, List[float]]],
     date_string: str,
+    topology_scenario: Optional[str] = None,
+    diagnostic_headers: Optional[Sequence[str]] = None,
+    diagnostic_rows: Optional[Sequence[Sequence[str]]] = None,
 ) -> List[str]:
     """Save reward, delay, and energy training plots."""
     plot_specs = [
-        ("reward", "Performance Comparison in Reward", "Reward"),
-        ("delay", "Performance Comparison in Task Processing Delay", "Task Processing Delay (s)"),
-        ("energy", "Performance Comparison in Energy Consumption", "Energy Consumption (J)"),
+        (
+            "reward",
+            f"Performance Comparison in Reward ({topology_scenario})",
+            "Reward",
+        ),
+        (
+            "delay",
+            f"Performance Comparison in Task Processing Delay ({topology_scenario})",
+            "Task Processing Delay (s)",
+        ),
+        (
+            "energy",
+            f"Performance Comparison in Energy Consumption ({topology_scenario})",
+            "Energy Consumption (J)",
+        ),
     ]
     plot_paths = []
     for metric_name, title, ylabel in plot_specs:
-        filename = f"{date_string}_comparison_{metric_name}.png"
+        filename = (
+            f"{date_string}_comparison_{metric_name}_{topology_scenario}.png"
+        )
         plotter.plot_training_curve(
             data_dict=plot_results[metric_name],
             title=title,
             ylabel=ylabel,
             filename=filename,
+            diagnostic_headers=diagnostic_headers,
+            diagnostic_rows=diagnostic_rows,
         )
         plot_paths.append(os.path.join(plotter.save_dir, filename))
     return plot_paths

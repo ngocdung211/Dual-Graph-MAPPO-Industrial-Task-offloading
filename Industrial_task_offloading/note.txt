@@ -1,3 +1,3 @@
-python run_comparision.py --topology-scenario medium_20d_6s --episodes 500 --baseline-episodes 5 --note medium20_compare_mask_vs_nomask_500ep_seed75
-python run_comparision.py --topology-scenario large_30d_10s --episodes 500 --baseline-episodes 5 --note large30_compare_mask_vs_nomask_500ep_seed75
-python run_comparision.py --note small10_compare_mask_vs_nomask_500ep_seed75
+python run_comparision.py --topology-scenario paper_10d_3s --episodes 500 --baseline-episodes 5 --graph-gat-device cuda --note paper10_all_mappo_500ep_seed75
+python run_comparision.py --topology-scenario medium_20d_6s --episodes 500 --baseline-episodes 5 --graph-gat-device cuda --note medium20_all_mappo_500ep_seed75
+python run_comparision.py --topology-scenario large_30d_9s --episodes 500 --baseline-episodes 5 --graph-gat-device cuda --note large30_all_mappo_500ep_seed75

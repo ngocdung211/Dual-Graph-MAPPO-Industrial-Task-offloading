@@ -23,40 +23,40 @@
     "name": "medium_20d_6s",
     "num_devices": 20,
     "num_servers": 6,
-    "coverage_radius_m": 14.0,
+    "coverage_radius_m": 12.0,
     "start_points": {
-      "avg_feasible_servers": 0.6,
-      "density": 0.09999999999999999,
+      "avg_feasible_servers": 0.5,
+      "density": 0.08333333333333333,
       "zero_link_ratio": 0.5,
-      "multi_link_ratio": 0.1,
+      "multi_link_ratio": 0.0,
       "device_server_ratio": 3.3333333333333335
     },
     "route_samples": {
-      "avg_feasible_servers": 0.6520833333333333,
-      "density": 0.10868055555555556,
-      "zero_link_ratio": 0.45625,
-      "multi_link_ratio": 0.10625,
+      "avg_feasible_servers": 0.5229166666666667,
+      "density": 0.08715277777777779,
+      "zero_link_ratio": 0.5208333333333334,
+      "multi_link_ratio": 0.04375,
       "device_server_ratio": 3.3333333333333335
     }
   },
   "large_30d_10s": {
     "name": "large_30d_10s",
     "num_devices": 30,
-    "num_servers": 10,
-    "coverage_radius_m": 14.0,
+    "num_servers": 9,
+    "coverage_radius_m": 12.0,
     "start_points": {
-      "avg_feasible_servers": 0.9666666666666667,
-      "density": 0.09666666666666666,
-      "zero_link_ratio": 0.23333333333333334,
-      "multi_link_ratio": 0.2,
-      "device_server_ratio": 3.0
+      "avg_feasible_servers": 0.5,
+      "density": 0.05555555555555555,
+      "zero_link_ratio": 0.5666666666666667,
+      "multi_link_ratio": 0.06666666666666667,
+      "device_server_ratio": 3.3333333333333335
     },
     "route_samples": {
-      "avg_feasible_servers": 0.8833333333333333,
-      "density": 0.08833333333333333,
-      "zero_link_ratio": 0.26805555555555555,
-      "multi_link_ratio": 0.14722222222222223,
-      "device_server_ratio": 3.0
+      "avg_feasible_servers": 0.5916666666666667,
+      "density": 0.06574074074074074,
+      "zero_link_ratio": 0.45694444444444443,
+      "multi_link_ratio": 0.04861111111111111,
+      "device_server_ratio": 3.3333333333333335
     }
   }
 }

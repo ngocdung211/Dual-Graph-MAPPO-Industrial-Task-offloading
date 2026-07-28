@@ -250,7 +250,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--output-dir",
-        default=os.path.join("results", "topology_preview"),
+        # default=os.path.join("results", "topology_preview"),
+        default='archive/topology_preview',
         help="Directory for generated PNG and JSON files.",
     )
     args = parser.parse_args()

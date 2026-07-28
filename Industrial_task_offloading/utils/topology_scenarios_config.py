@@ -93,11 +93,11 @@ def build_topology_scenarios() -> List[TopologyScenario]:
                 [78.0, 32.0],
                 [62.0, 66.0],
             ],
-            coverage_radius=14.0,
+            coverage_radius=12.0,
             route_rectangles=medium_routes(),
         ),
         TopologyScenario(
-            name="large_30d_10s",
+            name="large_30d_9s",
             device_count=30,
             server_locations=[
                 [18.0, 24.0],
@@ -108,10 +108,9 @@ def build_topology_scenarios() -> List[TopologyScenario]:
                 [80.0, 30.0],
                 [70.0, 83.0],
                 [82.0, 54.0],
-                [42.0, 62.0],
                 [56.0, 64.0],
             ],
-            coverage_radius=14.0,
+            coverage_radius=12.0,
             route_rectangles=large_routes(),
         ),
     ]

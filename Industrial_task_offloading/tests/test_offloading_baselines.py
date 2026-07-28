@@ -41,16 +41,27 @@ def test_edge_only_agent_chooses_first_connected_edge() -> None:
     """Edge-only baseline should prefer the first edge with l_end > l_start."""
     agent = EdgeOnlyAgent(state_dim=17, action_dim=4, num_agents=10)
     state = np.zeros(17, dtype=np.float32)
+    state[2] = 0.2
+    state[5:8] = 2.0
     # State tail encodes three l_start values then three l_end values.
     state[-6:] = np.array([1.0, 0.2, 0.4, 1.0, 0.8, 0.9], dtype=np.float32)
 
     assert agent.select_action(state) == 2
 
 
+def test_edge_only_agent_uses_local_when_no_edge_is_feasible() -> None:
+    """Edge-only baseline should not request an impossible edge action."""
+    agent = EdgeOnlyAgent(state_dim=17, action_dim=4, num_agents=10)
+
+    assert agent.select_action(np.zeros(17, dtype=np.float32)) == 0
+
+
 def test_feature_extraction_edge_agent_uses_edge_only_for_subtask_four() -> None:
     """Feature-extraction-only edge baseline should offload only subtask 4."""
     agent = FeatureExtractionEdgeAgent(state_dim=17, action_dim=4, num_agents=10)
     state = np.zeros(17, dtype=np.float32)
+    state[2] = 0.2
+    state[5:8] = 2.0
     state[-6:] = np.array([1.0, 0.2, 0.4, 1.0, 0.8, 0.9], dtype=np.float32)
 
     assert agent.select_action_for_subtask(state, subtask_id=1) == 0
@@ -61,6 +72,8 @@ def test_collect_joint_actions_passes_current_subtask_to_feature_baseline() -> N
     """Comparison loop should provide current subtask id to the feature baseline."""
     agent = FeatureExtractionEdgeAgent(state_dim=17, action_dim=4, num_agents=1)
     joint_state = np.zeros((1, 17), dtype=np.float32)
+    joint_state[0, 2] = 0.2
+    joint_state[0, 5:8] = 2.0
     joint_state[0, -6:] = np.array([1.0, 0.2, 0.4, 1.0, 0.8, 0.9], dtype=np.float32)
     env = SimpleNamespace(
         devices=[SimpleNamespace(id=1)],

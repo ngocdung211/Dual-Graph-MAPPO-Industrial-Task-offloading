@@ -258,6 +258,29 @@ def build_devices_for_scenario(
     return devices
 
 
+def summarize_physical_compute(
+    devices: Sequence[IndustrialDevice],
+    servers: Sequence[EdgeServer],
+    device_seed: int,
+    server_seed: int,
+) -> Dict[str, float]:
+    """Return actual CPU statistics for reproducibility metadata."""
+    device_ghz = np.asarray([device.compute_power for device in devices]) / 1e9
+    server_ghz = np.asarray([server.compute_power for server in servers]) / 1e9
+    return {
+        "actual_device_compute_seed": int(device_seed),
+        "actual_server_compute_seed": int(server_seed),
+        "actual_device_compute_power_min_ghz": float(np.min(device_ghz)),
+        "actual_device_compute_power_mean_ghz": float(np.mean(device_ghz)),
+        "actual_device_compute_power_max_ghz": float(np.max(device_ghz)),
+        "actual_device_compute_power_std_ghz": float(np.std(device_ghz)),
+        "actual_server_compute_power_min_ghz": float(np.min(server_ghz)),
+        "actual_server_compute_power_mean_ghz": float(np.mean(server_ghz)),
+        "actual_server_compute_power_max_ghz": float(np.max(server_ghz)),
+        "actual_server_compute_power_std_ghz": float(np.std(server_ghz)),
+    }
+
+
 def build_algorithm_configs(
     graph_gat_device: Optional[str] = None,
     *,
@@ -303,8 +326,8 @@ def build_algorithm_configs(
     configs = {
         "Local Only": {"class": LocalOnlyAgent, "kwargs": {}},
         "Edge Only": {"class": EdgeOnlyAgent, "kwargs": {}},
-        # "Feature Extraction Edge": {"class": FeatureExtractionEdgeAgent, "kwargs": {}},
-        # "Random Offloading": {"class": RandomOffloadingAgent, "kwargs": {}},
+        "Feature Extraction Edge": {"class": FeatureExtractionEdgeAgent, "kwargs": {}},
+        "Random Offloading": {"class": RandomOffloadingAgent, "kwargs": {}},
         # "e-ATN-MADDPG": {
         #     "class": EpsilonATNMADDPGAgent,
         #     "kwargs": {
@@ -347,7 +370,6 @@ def build_algorithm_configs(
                 "use_action_mask": provisional["mappo_use_action_mask"],
             },
         },
-
         "Graph-GAT MAPPO": {
             "class": GraphGATMAPPOAgent,
             "kwargs": {
@@ -426,7 +448,6 @@ def build_algorithm_configs(
                 "device": selected_graph_gat_device,
             },
         },
-
     }
     graph_overrides = {
         "lr": graph_gat_lr,
@@ -693,7 +714,7 @@ def _format_diagnostic_summary(algo_name: str, episode_number: int, history: Dic
         f"  Requested actions: local={requested_local:.0f} edge={requested_edge:.0f}\n"
         f"  Actual execution:  local={resolved_local:.0f} edge={resolved_edge:.0f}\n"
         f"  Penalties:         count={penalty_count:.0f} time={penalty_time:.3f}s\n"
-        f"  Timing avg/step:   local={local_time:.3f}s server={server_time:.3f}s "
+        f"  Timing/device-task: local={local_time:.3f}s server={server_time:.3f}s "
         f"transfer={transfer_time:.3f}s wait={wait_time:.3f}s"
     )
     graph_transition_count = history.get("graph_transition_count", [0.0])[-1]
@@ -1139,6 +1160,7 @@ def train_algorithm(
                 data_loader,
                 t_max=provisional["t_max"],
                 e_max=provisional["e_max"],
+                cpu_cycle_scale=provisional["task_cpu_cycle_scale"],
             )
             episode_dag_generation_time += (
                 time.perf_counter() - dag_generation_start
@@ -1277,16 +1299,37 @@ def train_algorithm(
         episode_avg_reward = float(np.mean(slot_rewards)) if slot_rewards else 0.0
         episode_avg_delay = float(np.mean(slot_delays)) if slot_delays else 0.0
         episode_avg_energy = float(np.mean(slot_energies)) if slot_energies else 0.0
-        episode_local_time = float(np.mean(slot_local_times)) if slot_local_times else 0.0
-        episode_server_time = float(np.mean(slot_server_times)) if slot_server_times else 0.0
+        device_count = max(len(devices), 1)
+        episode_local_time = (
+            float(np.mean(slot_local_times)) / device_count
+            if slot_local_times
+            else 0.0
+        )
+        episode_server_time = (
+            float(np.mean(slot_server_times)) / device_count
+            if slot_server_times
+            else 0.0
+        )
         episode_attempted_server_time = (
-            float(np.mean(slot_attempted_server_times)) if slot_attempted_server_times else 0.0
+            float(np.mean(slot_attempted_server_times)) / device_count
+            if slot_attempted_server_times
+            else 0.0
         )
-        episode_transfer_time = float(np.mean(slot_transfer_times)) if slot_transfer_times else 0.0
+        episode_transfer_time = (
+            float(np.mean(slot_transfer_times)) / device_count
+            if slot_transfer_times
+            else 0.0
+        )
         episode_queue_or_wait_time = (
-            float(np.mean(slot_queue_or_wait_times)) if slot_queue_or_wait_times else 0.0
+            float(np.mean(slot_queue_or_wait_times)) / device_count
+            if slot_queue_or_wait_times
+            else 0.0
         )
-        episode_penalty_time = float(np.mean(slot_penalty_times)) if slot_penalty_times else 0.0
+        episode_penalty_time = (
+            float(np.mean(slot_penalty_times)) / device_count
+            if slot_penalty_times
+            else 0.0
+        )
         episode_penalty_count = float(np.sum(slot_penalty_counts)) if slot_penalty_counts else 0.0
         episode_requested_local_count = (
             float(np.sum(slot_requested_local_counts)) if slot_requested_local_counts else 0.0
@@ -1485,6 +1528,8 @@ if __name__ == "__main__":
     args = parse_args()
     confirmed = PAPER_PARAMS["confirmed"]
     provisional = PAPER_PARAMS["provisional_table2_needed"]
+    experiment_seed = int(provisional["experiment_seed"])
+    set_seed(experiment_seed)
     BANDWIDTH, NOISE_POWER = confirmed["bandwidth_hz"], confirmed["noise_power_dbm"]
     topology_scenario = get_topology_scenario(args.topology_scenario)
     topology_metrics = compute_topology_metrics(topology_scenario)
@@ -1524,6 +1569,7 @@ if __name__ == "__main__":
         data_loader,
         t_max=provisional["t_max"],
         e_max=provisional["e_max"],
+        cpu_cycle_scale=provisional["task_cpu_cycle_scale"],
     )
 
     priority_model = load_or_train_priority_model(
@@ -1536,8 +1582,24 @@ if __name__ == "__main__":
         model_label=priority_model_name.upper(),
     )
     
+    server_compute_seed = experiment_seed
+    device_compute_seed = experiment_seed + 1
+    np.random.seed(server_compute_seed)
     servers = build_servers_for_scenario(topology_scenario, confirmed, provisional)
+    np.random.seed(device_compute_seed)
     devices = build_devices_for_scenario(topology_scenario, confirmed, provisional)
+    topology_metrics["physical_compute"] = summarize_physical_compute(
+        devices,
+        servers,
+        device_seed=device_compute_seed,
+        server_seed=server_compute_seed,
+    )
+    compute_metrics = topology_metrics["physical_compute"]
+    print(
+        "Actual CPU: "
+        f"devices={compute_metrics['actual_device_compute_power_mean_ghz']:.3f}GHz mean, "
+        f"servers={compute_metrics['actual_server_compute_power_mean_ghz']:.3f}GHz mean"
+    )
 
     # 2. Define Algorithms to Compare
     algorithms = select_algorithm_configs(
@@ -1578,7 +1640,6 @@ if __name__ == "__main__":
     last_training_state_rows = []
     model_checkpoints = []
     experiment_note = args.note.strip()
-    experiment_seed = int(provisional["experiment_seed"])
     tracking_group = args.wandb_group.strip() or (
         f"{topology_scenario.name}-"
         f"{experiment_note or 'comparison'}-seed{experiment_seed}"
@@ -1689,6 +1750,7 @@ if __name__ == "__main__":
         model_checkpoints=model_checkpoints,
         fixed_baseline_algorithms=FIXED_BASELINE_ALGORITHMS,
         experiment_note=experiment_note,
+        topology_scenario=topology_scenario.name,
     )
     last_state_path = output_paths["last_state_path"]
     checkpoint_paths = output_paths["checkpoint_paths"]

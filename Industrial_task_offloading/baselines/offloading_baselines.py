@@ -42,18 +42,28 @@ class EdgeOnlyAgent:
         self.num_agents = num_agents
 
     def select_action(self, state: Sequence[float]) -> int:
-        """Return the first edge with a non-empty connection window."""
+        """Return the first edge whose estimated execution fits its window."""
         server_count = self.action_dim - 1
         state_values = self._to_list(state)
+        priority_width = len(state_values) - (5 + 4 * server_count)
+        edge_power_offset = 5 + priority_width
+        edge_wait_offset = edge_power_offset + server_count
         window_start_offset = len(state_values) - (2 * server_count)
         window_end_offset = len(state_values) - server_count
+        cpu_cycles_ghz = state_values[2]
 
         for server_index in range(server_count):
+            edge_power_ghz = state_values[edge_power_offset + server_index]
+            if edge_power_ghz <= 0.0:
+                continue
+            edge_wait = state_values[edge_wait_offset + server_index]
             window_start = state_values[window_start_offset + server_index]
             window_end = state_values[window_end_offset + server_index]
-            if window_end > window_start:
+            compute_time = cpu_cycles_ghz / edge_power_ghz
+            estimated_start = max(edge_wait, window_start)
+            if estimated_start + compute_time < window_end:
                 return server_index + 1
-        return random.randint(1, 3)  # Fallback to random edge if all windows are empty
+        return 0
 
     def _to_list(self, state: Sequence[float]) -> Sequence[float]:
         """Convert tensor-like state values to a simple sequence."""

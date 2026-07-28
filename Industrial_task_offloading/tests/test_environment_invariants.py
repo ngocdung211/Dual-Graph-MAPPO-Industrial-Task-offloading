@@ -184,6 +184,35 @@ def test_reward_matches_equation_24_terms() -> None:
     assert reward == pytest.approx(expected)
 
 
+def test_physical_compute_delay_uses_actual_cpu_only() -> None:
+    """Changing the DT estimate must not alter physical execution delay."""
+    network_env = NetworkEnvironment(bandwidth=10e6, noise_power_dbm=-43)
+
+    local_delay_a, _ = network_env.calculate_local_computation(
+        cpu_cycles=2e9,
+        energy_coeff=1e-28,
+        f_est=0.5e9,
+        f_actual=1e9,
+    )
+    local_delay_b, _ = network_env.calculate_local_computation(
+        cpu_cycles=2e9,
+        energy_coeff=1e-28,
+        f_est=1.5e9,
+        f_actual=1e9,
+    )
+    edge_delay, edge_energy = network_env.calculate_edge_computation(
+        cpu_cycles=2e9,
+        energy_coeff=1e-27,
+        f_est=2e9,
+        f_actual=4e9,
+    )
+
+    assert local_delay_a == pytest.approx(2.0)
+    assert local_delay_b == pytest.approx(2.0)
+    assert edge_delay == pytest.approx(0.5)
+    assert edge_energy == pytest.approx(0.0)
+
+
 def test_connection_window_violation_is_recorded() -> None:
     """Invalid edge offload should be visible in step metrics."""
     env = _build_env(server_location=np.array([100.0, 100.0]))
@@ -204,6 +233,44 @@ def test_connection_window_violation_is_recorded() -> None:
     assert env.last_step_metrics[0]["attempted_server_time"] > 0.0
     assert env.last_step_metrics[0]["queue_or_wait_time"] >= 0.0
     assert env.last_step_metrics[0]["transfer_time"] >= 0.0
+
+
+def test_rejected_initial_offload_does_not_charge_upload_energy() -> None:
+    """Feasibility rejection should occur before an initial input upload."""
+    env = _build_env(server_location=np.array([100.0, 100.0]))
+    task_dag = TaskDAG(task_id=1, t_max=1.0, e_max=1.0)
+    task_dag.add_subtask(
+        Subtask(1, cpu_cycles=1e6, data_size=1e8, result_size=1e4)
+    )
+    env.reset({1: task_dag}, {1: [1]})
+
+    env.step([1])
+
+    assert env.last_step_metrics[0]["transfer_time"] == pytest.approx(0.0)
+    assert env.last_step_metrics[0]["tx_energy"] == pytest.approx(0.0)
+
+
+def test_step_reward_uses_updated_accumulated_costs() -> None:
+    """Eq. 24 accumulated terms should include the current subtask."""
+    env = _build_env(server_location=np.array([0.0, 1.0]))
+    task_dag = TaskDAG(task_id=1, t_max=1.0, e_max=1.0)
+    task_dag.add_subtask(
+        Subtask(1, cpu_cycles=1e6, data_size=0.0, result_size=0.0)
+    )
+    env.reset({1: task_dag}, {1: [1]})
+
+    _, rewards, _, _ = env.step([0])
+    metric = env.last_step_metrics[0]
+    expected_reward = env._calculate_reward(
+        metric["delay"],
+        metric["energy"],
+        env.slot_accumulated_delay[1],
+        env.slot_accumulated_energy[1],
+        0.0,
+        task_dag,
+    )
+
+    assert rewards[0] == pytest.approx(expected_reward)
 
 
 def test_invalid_priority_order_is_rejected() -> None:
@@ -235,7 +302,7 @@ def test_parallel_branch_delay_uses_dag_makespan() -> None:
 
 @pytest.mark.parametrize(
     "scenario_name",
-    ["paper_10d_3s", "medium_20d_6s", "large_30d_10s"],
+    ["paper_10d_3s", "medium_20d_6s", "large_30d_9s"],
 )
 def test_vectorized_connection_windows_match_sequential_reference(
     scenario_name: str,

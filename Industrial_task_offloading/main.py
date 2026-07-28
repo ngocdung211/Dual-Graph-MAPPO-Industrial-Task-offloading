@@ -162,7 +162,13 @@ def train_maddpg(
             slot_steps = 0
             prev_delay_mean = np.mean(list(env.device_accumulated_delay.values()))
             prev_energy_mean = np.mean(list(env.device_accumulated_energy.values()))
-            task_dags = generate_task_dags_for_episode(devices, data_loader)
+            task_dags = generate_task_dags_for_episode(
+                devices,
+                data_loader,
+                cpu_cycle_scale=PAPER_PARAMS["provisional_table2_needed"][
+                    "task_cpu_cycle_scale"
+                ],
+            )
             priorities = build_priorities(task_dags, priority_model)
 
             current_joint_state = env.start_time_slot(task_dags, priorities)
@@ -309,7 +315,10 @@ if __name__ == "__main__":
         hidden_dim=int(confirmed["gcn_hidden_dim"]),
     )
     priority_ckpt_path = get_priority_checkpoint_path(priority_model_name)
-    sample_training_dag = make_priority_dag_sampler(data_loader)
+    sample_training_dag = make_priority_dag_sampler(
+        data_loader,
+        cpu_cycle_scale=provisional["task_cpu_cycle_scale"],
+    )
 
     priority_model = load_or_train_priority_model(
         priority_model=priority_model,

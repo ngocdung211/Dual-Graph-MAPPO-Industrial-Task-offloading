@@ -43,7 +43,7 @@ Use offline mode when the training machine cannot reach W&B reliably:
 
 ```powershell
 python run_comparision.py `
-  --topology-scenario large_30d_10s `
+  --topology-scenario large_30d_9s `
   --episodes 3 `
   --baseline-episodes 1 `
   --graph-gat-device cuda `
@@ -90,7 +90,7 @@ CPU:
 
 ```powershell
 python run_comparision.py `
-  --topology-scenario large_30d_10s `
+  --topology-scenario large_30d_9s `
   --episodes 20 `
   --baseline-episodes 1 `
   --algorithms "Graph-GAT MAPPO" `
@@ -105,7 +105,7 @@ CUDA:
 
 ```powershell
 python run_comparision.py `
-  --topology-scenario large_30d_10s `
+  --topology-scenario large_30d_9s `
   --episodes 20 `
   --baseline-episodes 1 `
   --algorithms "Graph-GAT MAPPO" `
@@ -124,7 +124,7 @@ Compare medians over episodes 2-20 for `training/episode_seconds`,
 ## Graph-GAT 1000-episode tuning
 
 Use `medium_20d_6s` as the tuning map. Keep `paper_10d_3s` and
-`large_30d_10s` as transfer checks so hyperparameters are not selected on every
+`large_30d_9s` as transfer checks so hyperparameters are not selected on every
 evaluation map independently.
 
 First run the unchanged 1000-episode control:

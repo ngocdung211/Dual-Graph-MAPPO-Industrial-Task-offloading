@@ -123,7 +123,7 @@ Goal: test whether Graph-GAT Mask MAPPO only shows value when topology is comple
 1. [x] **Add named topology scenario configs**
    - Keep current paper-like scenario as `paper_10d_3s`.
    - Add `medium_20d_6s`.
-   - Add `large_30d_10s`.
+   - Add `large_30d_9s` (the current layout contains 9 servers).
    - Config controls:
      - map size;
      - number of devices;
@@ -161,7 +161,7 @@ Goal: test whether Graph-GAT Mask MAPPO only shows value when topology is comple
    - Scenarios:
      - `paper_10d_3s`;
      - `medium_20d_6s`;
-     - `large_30d_10s`.
+     - `large_30d_9s`.
    - Verify:
      - no scenario has impossible all-disconnected or all-connected topology unless intentionally configured;
      - reward/delay/energy are finite.
@@ -210,7 +210,7 @@ Goal: prove which implemented component improves MAPPO before adding pretrained 
      - reward, delay, energy, penalty count, local/edge ratio, and graph warmup metrics are saved.
 
 2. [ ] **Run core component ablation on the large map**
-   - Scenario: `large_30d_10s`.
+   - Scenario: `large_30d_9s`.
    - Use the same model list and seed as the medium run.
    - Purpose: show whether Graph-GAT helps more when there are more agents, servers, and overlapping coverage choices.
    - Success signal:
@@ -269,7 +269,7 @@ Goal: explain and remove avoidable Graph-GAT cost before rerunning medium/large 
    - Verify: every completed model has a checkpoint/final JSONL row, and incomplete models are clearly labeled rather than silently rerun.
 
 2. [ ] **Build a deterministic scaling benchmark before changing code**
-   - Run the same fixed number of transitions and PPO updates for `paper_10d_3s`, `medium_20d_6s`, and `large_30d_10s`.
+   - Run the same fixed number of transitions and PPO updates for `paper_10d_3s`, `medium_20d_6s`, and `large_30d_9s`.
    - Add counters for local-subgraph builds, local encoder forwards, global encoder forwards, actor time, critic time, and backward time.
    - Use `cProfile` and a PyTorch CPU profiler on a 1-3 episode run after the local PyTorch runtime is repaired.
    - Verify: the measured encoder-call count matches the expected formula and the top functions explain most of the Graph-GAT/MAPPO gap.
@@ -360,7 +360,7 @@ Goal: remove the new dominant CPU cost after Graph-GAT batching, while preservin
    - Verify each accepted optimization independently against fixed-seed outputs and wall time.
 
 6. [ ] **Run end-to-end CPU/CUDA validation after environment repair**
-   - Run matched 20-30 episode CPU and CUDA Graph-GAT MAPPO jobs on `large_30d_10s`, same seed and configuration, excluding episode one from median timing.
+   - Run matched 20-30 episode CPU and CUDA Graph-GAT MAPPO jobs on `large_30d_9s`, same seed and configuration, excluding episode one from median timing.
    - Report median episode time, environment time, connection-window time, graph build/action/update time, unaccounted time, and GPU memory.
    - Success targets: at least `5x` faster connection-window evaluation, at least `3x` faster environment-only large benchmark, and no fixed-seed trajectory difference. Treat end-to-end speedup as a measured result rather than a guaranteed target.
 
@@ -405,7 +405,7 @@ mask.
 
 4. [ ] **Transfer the selected configuration without per-map retuning**
    - Reuse the exact medium-selected configuration on `paper_10d_3s` and
-     `large_30d_10s` for 1000 episodes.
+     `large_30d_9s` for 1000 episodes.
    - Compare against Mask-MAPPO with the same seed and episode budget.
    - Do not claim improvement unless Graph-GAT is better across multiple
      metrics and remains stable through episodes 900-1000.
@@ -421,9 +421,28 @@ mask.
 
 Goal: implement the proposed model as a real DT-assisted dual-graph policy rather than a topology-GAT policy attached to a partially DT-like flat state.
 
+**Minimal DT foundation - 2026-07-22:**
+- [x] Add a `DigitalTwin` logic class and per-slot `DigitalTwinSnapshot` with device/server CPU estimates.
+- [x] Preserve a perfect-synchronization mode when estimation error is zero and bounded noisy CPU estimates otherwise.
+- [x] Keep physical device/server CPU values unchanged and expose the synchronized snapshot through `DITENEnv`.
+- Current scope is deliberately small: topology, queues, tasks, and connection windows still use the existing exact environment state.
+- Deferred below: task twin state, synchronization delay/staleness, confidence/deviation fields, noisy connectivity, serialization metadata, and policy observation isolation.
+
+**Baseline environment calibration - 2026-07-28:**
+- [x] Seed server and device CPU sampling before physical entity creation and save actual CPU min/mean/max/std plus seeds in final JSONL.
+- [x] Use actual CPU for physical compute delay while retaining estimated CPU in the DT observation.
+- [x] Make Edge Only choose local when no estimated edge execution fits a connection window.
+- [x] Treat failed offload as rejected before upload; fallback-local transfer accounting follows the resolved physical path.
+- [x] Rename the current nine-server large scenario to `large_30d_9s`.
+- [x] Normalize execution timing diagnostics per device-task.
+- [x] Remove the one-step lag from accumulated reward inputs.
+- [x] Set `task_cpu_cycle_scale=1.35`; one-episode calibration puts Local Only at 1.15-1.46 seconds across the three named topologies.
+- [ ] Improve the Paper topology Feature-vs-Local separation only after deciding whether to increase coverage or change reward weights; sparse coverage currently permits 93 of 500 feature tasks (3.7% of all tasks) to execute at edge in the one-episode calibration.
+
 **Current implementation gap:**
-- `DITENEnv` already samples estimated device/server compute power and exposes queue waits, so it contains part of the manuscript's DT observation.
-- There is no explicit physical-state versus twin-state boundary, synchronization timestamp, observation delay/staleness, or recorded estimation deviation.
+- `DigitalTwin` now samples estimated device/server compute power once per slot, while `DITENEnv` exposes the snapshot and continues to own physical entities and execution.
+- Physical compute delay now uses only actual CPU power; DT CPU estimates affect observations but no longer alter execution truth.
+- The minimal snapshot only models CPU-estimation error. There is no complete physical-state versus twin-observation boundary, synchronization timestamp, observation delay/staleness, or recorded estimation deviation.
 - Environment execution and observation construction share the same objects, making it difficult to test whether the policy receives oracle physical state.
 - `TaskPriorityGAT` currently produces a priority order before environment execution; its per-subtask embedding is not passed to Graph-GAT MAPPO.
 - `GraphGATMAPPOAgent` consumes topology embeddings only. It does not implement the proposed fused state `[h_task || h_topo || z_DT]` for the current subtask.
@@ -445,6 +464,8 @@ Goal: implement the proposed model as a real DT-assisted dual-graph policy rathe
    - Policy observations are built only from the latest twin snapshot.
    - Add configurable perfect, noisy, and stale synchronization modes.
    - Verify: perfect zero-error synchronization reproduces the legacy state and reward trajectory; noisy/stale modes change observations without directly changing physical truth.
+   - [x] Minimal CPU boundary: local and edge compute delay use `f_actual`; `f_est` remains an observation field.
+   - [ ] Remaining boundary: queues, mobility, and connectivity still need explicit twin-owned observation state.
 
 4. [ ] **Define DT-aware feasibility and masking semantics**
    - The policy mask must be derived from twin-predicted connectivity, not hidden physical truth.
@@ -548,7 +569,7 @@ Goal: separate task-priority quality from offloading-policy quality.
 3. Remove duplicate connection-window recomputation and verify exact fixed-seed trajectory equivalence.
 4. Vectorize the sampled connection-window calculation and repeat the equivalence/scaling benchmarks.
 5. Optimize Task-GAT priority, dataset I/O, or state construction only if the post-repair profiler shows a contribution of at least 5%.
-6. Run matched 20-30 episode CPU/CUDA W&B validation on `large_30d_10s` and compare medians excluding episode one.
+6. Run matched 20-30 episode CPU/CUDA W&B validation on `large_30d_9s` and compare medians excluding episode one.
 7. Import and audit the completed remote ablation outputs; rerun only interrupted or behavior-invalidated rows.
 8. Freeze the physical-state/digital-twin-state contract from the baseline paper and current manuscript.
 9. Add explicit twin snapshots and synchronization while keeping environment physics unchanged.
@@ -620,14 +641,14 @@ Current output should now look like:
   Requested actions: local=2329 edge=171
   Actual execution:  local=2480 edge=20
   Penalties:         count=151 time=0.856s
-  Timing avg/step:   local=2.750s server=0.081s transfer=0.210s wait=0.440s
+  Timing/device-task: local=2.750s server=0.081s transfer=0.210s wait=0.440s
 ```
 
 Interpretation:
 - `Requested actions` means what the policy asked for.
 - `Actual execution` means what really ran after fallback.
 - `Penalties` means edge requests that violated the connection window.
-- `Timing avg/step` helps identify whether high delay comes from local compute, edge compute, transfer, or queue/wait.
+- `Timing/device-task` helps identify whether high delay comes from local compute, edge compute, transfer, or queue/wait.
 
 ---
 
@@ -1087,8 +1108,8 @@ Historical note: this checklist documents the original paper-reimplementation au
   - Option A: always use nearest edge server.
   - Option B: always use first valid edge server by connection window.
   - Option C: always use fixed server `1`.
-  - Implemented default: first valid edge server by connection-window state, otherwise server `1`, because the current state vector does not include distance for nearest-server selection.
-  - Verification: no local action unless the chosen edge action is explicitly rejected by the environment policy we decide.
+  - Implemented default: first server whose DT-estimated compute time fits its connection window; otherwise local action `0`.
+  - Verification: disconnected devices select local, while residual rejection records DT-estimate or transfer/queue mismatch against physical feasibility.
 
 - [x] Implement random offloading baseline after confirming interpretation.
   - Implemented default: random execution location from `{local, edge1, edge2, edge3}` with the same priority source as MADDPG, because this isolates offloading-location quality.
