@@ -2,6 +2,7 @@
 
 import numpy as np
 import pathlib
+import pytest
 import random
 import sys
 import torch
@@ -116,12 +117,37 @@ def test_replay_buffer_samples_multi_agent_shapes() -> None:
         batch_size=batch_size,
     )
 
-    state_b, action_b, reward_b, next_state_b = replay_buffer.sample(batch_size)
+    state_b, action_b, reward_b, next_state_b, done_b = replay_buffer.sample(
+        batch_size
+    )
 
     assert state_b.shape == (batch_size, num_agents, state_dim)
     assert action_b.shape == (batch_size, num_agents)
     assert reward_b.shape == (batch_size, num_agents)
     assert next_state_b.shape == (batch_size, num_agents, state_dim)
+    assert done_b.shape == (batch_size, 1)
+    assert torch.all(done_b == 0.0)
+
+
+def test_progress_schedule_reaches_final_epsilon() -> None:
+    """Epsilon should depend on episode progress rather than update count."""
+    agent = EpsilonATNMADDPGAgent(
+        state_dim=4,
+        action_dim=3,
+        num_agents=2,
+        epsilon_init=1.0,
+        epsilon_final=0.05,
+        exploration_fraction=0.4,
+    )
+
+    agent.set_training_progress(completed_episodes=0, total_episodes=500)
+    assert agent.epsilon == 1.0
+    agent.set_training_progress(completed_episodes=100, total_episodes=500)
+    assert agent.epsilon == 0.525
+    agent.set_training_progress(completed_episodes=200, total_episodes=500)
+    assert agent.epsilon == pytest.approx(0.05)
+    agent.set_training_progress(completed_episodes=500, total_episodes=500)
+    assert agent.epsilon == pytest.approx(0.05)
 
 
 def test_actor_parameters_change_after_replay_update() -> None:
@@ -153,6 +179,43 @@ def test_critic_parameters_change_after_replay_update() -> None:
 
     after = _clone_critic_parameters(agents[0])
     assert _parameters_changed(before, after)
+
+
+def test_terminal_transitions_do_not_bootstrap_target_q() -> None:
+    """Terminal replay targets should omit the next-state critic value."""
+    torch.manual_seed(37)
+    continuing_agents, continuing_buffer = _build_agents_and_buffer(
+        batch_size=4
+    )
+    torch.manual_seed(37)
+    terminal_agents, terminal_buffer = _build_agents_and_buffer(batch_size=4)
+    continuing_buffer.buffer = type(continuing_buffer.buffer)(
+        [(*experience[:-1], False) for experience in continuing_buffer.buffer],
+        maxlen=16,
+    )
+    terminal_buffer.buffer = type(terminal_buffer.buffer)(
+        [(*experience[:-1], True) for experience in terminal_buffer.buffer],
+        maxlen=16,
+    )
+
+    random.seed(41)
+    continuing_metrics = _update_agents_from_buffer(
+        continuing_agents,
+        continuing_buffer,
+        batch_size=4,
+        gamma=0.95,
+    )
+    random.seed(41)
+    terminal_metrics = _update_agents_from_buffer(
+        terminal_agents,
+        terminal_buffer,
+        batch_size=4,
+        gamma=0.95,
+    )
+
+    assert continuing_metrics["update_rounds"] == 1.0
+    assert terminal_metrics["update_rounds"] == 1.0
+    assert continuing_metrics["critic_loss"] != terminal_metrics["critic_loss"]
 
 
 def test_soft_update_moves_target_network_parameters() -> None:

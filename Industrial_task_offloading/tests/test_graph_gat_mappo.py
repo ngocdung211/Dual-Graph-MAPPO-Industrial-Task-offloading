@@ -562,7 +562,8 @@ def test_graph_gat_hyperparameter_overrides_are_scoped_to_graph_variants() -> No
         kwargs = config["kwargs"]
         if config["class"] is not GraphGATMAPPOAgent:
             assert "encoder_lr" not in kwargs
-            assert "entropy_coef" not in kwargs
+            if "entropy_coef" in kwargs:
+                assert kwargs["entropy_coef"] != 0.005
             continue
         assert kwargs["lr"] == 8e-5
         assert kwargs["encoder_lr"] == 3e-5

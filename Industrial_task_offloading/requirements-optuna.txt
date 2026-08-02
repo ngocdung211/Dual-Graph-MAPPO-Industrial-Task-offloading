@@ -1,0 +1,2 @@
+# Optional hyperparameter optimization dependency.
+optuna>=4.9,<5

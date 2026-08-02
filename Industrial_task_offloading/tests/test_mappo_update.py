@@ -94,6 +94,17 @@ def test_select_action_with_log_prob_returns_rollout_metadata() -> None:
     assert isinstance(log_prob, float)
 
 
+def test_greedy_action_uses_highest_policy_probability() -> None:
+    """Deterministic evaluation should not sample the MAPPO policy."""
+    agent = MAPPOAgent(state_dim=4, action_dim=3, num_agents=1)
+    with torch.no_grad():
+        for parameter in agent.actor.parameters():
+            parameter.zero_()
+        agent.actor.fc3.bias.copy_(torch.tensor([-1.0, 2.0, 0.0]))
+
+    assert agent.select_greedy_action(torch.zeros(4)) == 1
+
+
 def test_mappo_action_mask_zeros_disconnected_server_probabilities() -> None:
     """MAPPO mask should keep local and remove disconnected server actions."""
     agent = MAPPOAgent(
@@ -143,7 +154,9 @@ def test_mappo_update_changes_actor_and_critic_parameters() -> None:
     np.random.seed(23)
     batch_size = 4
     agents, replay_buffer = _build_mappo_agents_and_buffer(batch_size=batch_size)
-    state_b, action_b, reward_b, next_state_b = replay_buffer.sample(batch_size)
+    state_b, action_b, reward_b, next_state_b, _ = replay_buffer.sample(
+        batch_size
+    )
     old_log_prob_b = torch.zeros((batch_size, len(agents)))
     done_b = torch.zeros((batch_size, 1))
     actor_before = _clone_module_parameters(agents[0].actor)

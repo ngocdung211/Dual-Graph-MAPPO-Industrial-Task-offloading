@@ -4,7 +4,6 @@ from typing import Dict, List, Sequence
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import time
 from tqdm import trange
 
@@ -25,6 +24,7 @@ from utils.experiment_setup import (
     make_priority_dag_sampler,
 )
 from utils.paper_config import PAPER_PARAMS
+from utils.maddpg_training import update_maddpg_agents_from_buffer
 
 import random
 
@@ -63,7 +63,7 @@ def _update_agents_from_buffer(
     replay_buffer: MultiAgentReplayBuffer,
     batch_size: int,
     gamma: float,
-) -> None:
+) -> Dict[str, float]:
     """Update agents from replay buffer samples when enough data is available.
 
     Args:
@@ -72,47 +72,12 @@ def _update_agents_from_buffer(
         batch_size: Batch size for sampling.
         gamma: Discount factor.
     """
-    if len(replay_buffer) < batch_size:
-        return
-
-    for agent_index, agent in enumerate(agents):
-        state_b, action_b, reward_b, next_state_b = replay_buffer.sample(batch_size)
-        agent_rewards = reward_b[:, agent_index].unsqueeze(1)
-        action_dim = agent.action_dim
-        action_b_onehot = F.one_hot(action_b.long(), num_classes=action_dim).float()
-
-        with torch.no_grad():
-            target_joint_action_idx = torch.stack(
-                [
-                    torch.argmax(a.target_actor(next_state_b[:, j, :]), dim=1)
-                    for j, a in enumerate(agents)
-                ],
-                dim=1,
-            )
-            target_joint_actions = F.one_hot(
-                target_joint_action_idx.long(), num_classes=action_dim
-            ).float()
-            target_q = agent.target_critic(next_state_b, target_joint_actions)
-            y_i = agent_rewards + gamma * target_q
-
-        current_q = agent.critic(state_b, action_b_onehot)
-        critic_loss = F.mse_loss(current_q, y_i)
-        agent.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        agent.critic_optimizer.step()
-
-        predicted_actions = agent.actor(state_b[:, agent_index, :])
-        predicted_joint_actions = action_b_onehot.clone()
-        predicted_joint_actions[:, agent_index] = predicted_actions
-
-        actor_loss = -agent.critic(state_b, predicted_joint_actions).mean()
-        agent.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        agent.actor_optimizer.step()
-
-        agent.soft_update(agent.target_actor, agent.actor)
-        agent.soft_update(agent.target_critic, agent.critic)
-        agent.update_epsilon()
+    return update_maddpg_agents_from_buffer(
+        agents,
+        replay_buffer,
+        batch_size,
+        gamma,
+    )
 
 
 def train_maddpg(
@@ -149,6 +114,8 @@ def train_maddpg(
 
     episode_iterator = trange(num_episodes, desc="Training e-ATN-MADDPG", leave=True)
     for episode in episode_iterator:
+        for agent in agents:
+            agent.set_training_progress(episode, num_episodes)
         env.reset_episode()
         episode_done = False
         slot_rewards = []
@@ -184,7 +151,13 @@ def train_maddpg(
                 slot_reward += step_reward
                 slot_steps += 1
 
-                replay_buffer.push(current_joint_state, joint_actions, joint_rewards, next_joint_state)
+                replay_buffer.push(
+                    current_joint_state,
+                    joint_actions,
+                    joint_rewards,
+                    next_joint_state,
+                    done=step_episode_done,
+                )
                 current_joint_state = next_joint_state
 
             current_delay_mean = np.mean(list(env.device_accumulated_delay.values()))

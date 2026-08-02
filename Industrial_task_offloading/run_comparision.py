@@ -5,7 +5,7 @@ generates plots and JSON summaries for reward, delay, and energy.
 """
 
 import argparse
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -48,6 +48,7 @@ from utils.experiment_tracking import (
     initialize_experiment_tracker,
 )
 from utils.paper_config import PAPER_PARAMS
+from utils.maddpg_training import update_maddpg_agents_from_buffer
 from utils.topology_graph_state import TopologyGraphState, build_topology_graph_state
 from utils.topology_scenarios_config import (
     TopologyScenario,
@@ -330,14 +331,23 @@ def build_algorithm_configs(
         "Random Offloading": {"class": RandomOffloadingAgent, "kwargs": {}},
         # "e-ATN-MADDPG": {
         #     "class": EpsilonATNMADDPGAgent,
+        #     "batch_size": int(provisional["batch_size"]),
         #     "kwargs": {
         #         "use_attention": True,
         #         "use_epsilon_greedy": True,
-        #         "lr": confirmed["rl_lr"],
+        #         "actor_lr": provisional["maddpg_actor_lr"],
+        #         "critic_lr": provisional["maddpg_critic_lr"],
+        #         "gamma": provisional["gamma"],
+        #         "tau": provisional["tau_soft_update"],
+        #         "hidden_dim": int(provisional["maddpg_hidden_dim"]),
         #         "epsilon_init": provisional["epsilon_init"],
         #         "epsilon_min": provisional["epsilon_min"],
-        #         "decay": provisional["epsilon_decay"],
+        #         "epsilon_final": provisional["maddpg_epsilon_final"],
+        #         "exploration_fraction": provisional[
+        #             "maddpg_exploration_fraction"
+        #         ],
         #     },
+        # },
         # "MADDPG": {
         #     "class": EpsilonATNMADDPGAgent,
         #     "kwargs": {
@@ -350,104 +360,112 @@ def build_algorithm_configs(
         #     },
         # },
         # "MAAC": {"class": MAACAgent, "kwargs": {"lr": confirmed["rl_lr"]}},
-        "MAPPO": {
-            "class": MAPPOAgent,
-            "kwargs": {
-                "lr": confirmed["rl_lr"],
-                "gamma": provisional["gamma"],
-                "clip_param": provisional["mappo_clip_param"],
-                "ppo_epochs": int(provisional["mappo_ppo_epochs"]),
-                "use_action_mask": False,
-            },
-        },
-        "Mask-MAPPO": {
-            "class": MAPPOAgent,
-            "kwargs": {
-                "lr": confirmed["rl_lr"],
-                "gamma": provisional["gamma"],
-                "clip_param": provisional["mappo_clip_param"],
-                "ppo_epochs": int(provisional["mappo_ppo_epochs"]),
-                "use_action_mask": provisional["mappo_use_action_mask"],
-            },
-        },
-        "Graph-GAT MAPPO": {
-            "class": GraphGATMAPPOAgent,
-            "kwargs": {
-                "lr": confirmed["rl_lr"],
-                "gamma": provisional["gamma"],
-                "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
-                "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
-                "clip_param": provisional["graph_gat_clip_param"],
-                "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
-                "entropy_coef": provisional["graph_gat_entropy_coef"],
-                "value_loss_coef": provisional["graph_gat_value_loss_coef"],
-                "max_grad_norm": provisional["graph_gat_max_grad_norm"],
-                "use_action_mask": False,
-                "device": selected_graph_gat_device,
-            },
-        },
-        "Graph-GAT Warmup MAPPO": {
-            "class": GraphGATMAPPOAgent,
-            "kwargs": {
-                "lr": confirmed["rl_lr"],
-                "gamma": provisional["gamma"],
-                "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
-                "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
-                "clip_param": provisional["graph_gat_clip_param"],
-                "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
-                "entropy_coef": provisional["graph_gat_entropy_coef"],
-                "value_loss_coef": provisional["graph_gat_value_loss_coef"],
-                "max_grad_norm": provisional["graph_gat_max_grad_norm"],
-                "use_action_mask": False,
-                "topology_warmup_episodes": int(
-                    provisional["graph_gat_topology_warmup_episodes"]
-                ),
-                "topology_warmup_updates_per_step": int(
-                    provisional["graph_gat_topology_warmup_updates_per_step"]
-                ),
-                "topology_warmup_lr": provisional["graph_gat_topology_warmup_lr"],
-                "device": selected_graph_gat_device,
-            },
-        },
-        "Graph-GAT Mask MAPPO": {
-            "class": GraphGATMAPPOAgent,
-            "kwargs": {
-                "lr": confirmed["rl_lr"],
-                "gamma": provisional["gamma"],
-                "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
-                "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
-                "clip_param": provisional["graph_gat_clip_param"],
-                "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
-                "entropy_coef": provisional["graph_gat_entropy_coef"],
-                "value_loss_coef": provisional["graph_gat_value_loss_coef"],
-                "max_grad_norm": provisional["graph_gat_max_grad_norm"],
-                "use_action_mask": provisional["graph_gat_use_action_mask"],
-                "device": selected_graph_gat_device,
-            },
-        },
-        "Graph-GAT Warmup Mask MAPPO": {
-            "class": GraphGATMAPPOAgent,
-            "kwargs": {
-                "lr": confirmed["rl_lr"],
-                "gamma": provisional["gamma"],
-                "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
-                "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
-                "clip_param": provisional["graph_gat_clip_param"],
-                "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
-                "entropy_coef": provisional["graph_gat_entropy_coef"],
-                "value_loss_coef": provisional["graph_gat_value_loss_coef"],
-                "max_grad_norm": provisional["graph_gat_max_grad_norm"],
-                "use_action_mask": provisional["graph_gat_use_action_mask"],
-                "topology_warmup_episodes": int(
-                    provisional["graph_gat_topology_warmup_episodes"]
-                ),
-                "topology_warmup_updates_per_step": int(
-                    provisional["graph_gat_topology_warmup_updates_per_step"]
-                ),
-                "topology_warmup_lr": provisional["graph_gat_topology_warmup_lr"],
-                "device": selected_graph_gat_device,
-            },
-        },
+        # "MAPPO": {
+        #     "class": MAPPOAgent,
+        #     "kwargs": {
+        #         "lr": confirmed["rl_lr"],
+        #         "gamma": provisional["gamma"],
+        #         "clip_param": provisional["mappo_clip_param"],
+        #         "ppo_epochs": int(provisional["mappo_ppo_epochs"]),
+        #         "entropy_coef": provisional["mappo_entropy_coef"],
+        #         "value_loss_coef": provisional["mappo_value_loss_coef"],
+        #         "max_grad_norm": provisional["mappo_max_grad_norm"],
+        #         "hidden_dim": int(provisional["mappo_hidden_dim"]),
+        #         "use_action_mask": False,
+        #     },
+        # },
+        # "Mask-MAPPO": {
+        #     "class": MAPPOAgent,
+        #     "kwargs": {
+        #         "lr": confirmed["rl_lr"],
+        #         "gamma": provisional["gamma"],
+        #         "clip_param": provisional["mappo_clip_param"],
+        #         "ppo_epochs": int(provisional["mappo_ppo_epochs"]),
+        #         "entropy_coef": provisional["mappo_entropy_coef"],
+        #         "value_loss_coef": provisional["mappo_value_loss_coef"],
+        #         "max_grad_norm": provisional["mappo_max_grad_norm"],
+        #         "hidden_dim": int(provisional["mappo_hidden_dim"]),
+        #         "use_action_mask": provisional["mappo_use_action_mask"],
+        #     },
+        # },
+        # "Graph-GAT MAPPO": {
+        #     "class": GraphGATMAPPOAgent,
+        #     "kwargs": {
+        #         "lr": confirmed["rl_lr"],
+        #         "gamma": provisional["gamma"],
+        #         "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
+        #         "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
+        #         "clip_param": provisional["graph_gat_clip_param"],
+        #         "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
+        #         "entropy_coef": provisional["graph_gat_entropy_coef"],
+        #         "value_loss_coef": provisional["graph_gat_value_loss_coef"],
+        #         "max_grad_norm": provisional["graph_gat_max_grad_norm"],
+        #         "use_action_mask": False,
+        #         "device": selected_graph_gat_device,
+        #     },
+        # },
+        # "Graph-GAT Warmup MAPPO": {
+        #     "class": GraphGATMAPPOAgent,
+        #     "kwargs": {
+        #         "lr": confirmed["rl_lr"],
+        #         "gamma": provisional["gamma"],
+        #         "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
+        #         "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
+        #         "clip_param": provisional["graph_gat_clip_param"],
+        #         "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
+        #         "entropy_coef": provisional["graph_gat_entropy_coef"],
+        #         "value_loss_coef": provisional["graph_gat_value_loss_coef"],
+        #         "max_grad_norm": provisional["graph_gat_max_grad_norm"],
+        #         "use_action_mask": False,
+        #         "topology_warmup_episodes": int(
+        #             provisional["graph_gat_topology_warmup_episodes"]
+        #         ),
+        #         "topology_warmup_updates_per_step": int(
+        #             provisional["graph_gat_topology_warmup_updates_per_step"]
+        #         ),
+        #         "topology_warmup_lr": provisional["graph_gat_topology_warmup_lr"],
+        #         "device": selected_graph_gat_device,
+        #     },
+        # },
+        # "Graph-GAT Mask MAPPO": {
+        #     "class": GraphGATMAPPOAgent,
+        #     "kwargs": {
+        #         "lr": confirmed["rl_lr"],
+        #         "gamma": provisional["gamma"],
+        #         "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
+        #         "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
+        #         "clip_param": provisional["graph_gat_clip_param"],
+        #         "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
+        #         "entropy_coef": provisional["graph_gat_entropy_coef"],
+        #         "value_loss_coef": provisional["graph_gat_value_loss_coef"],
+        #         "max_grad_norm": provisional["graph_gat_max_grad_norm"],
+        #         "use_action_mask": provisional["graph_gat_use_action_mask"],
+        #         "device": selected_graph_gat_device,
+        #     },
+        # },
+    #     "Graph-GAT Warmup Mask MAPPO": {
+    #         "class": GraphGATMAPPOAgent,
+    #         "kwargs": {
+    #             "lr": confirmed["rl_lr"],
+    #             "gamma": provisional["gamma"],
+    #             "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
+    #             "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
+    #             "clip_param": provisional["graph_gat_clip_param"],
+    #             "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
+    #             "entropy_coef": provisional["graph_gat_entropy_coef"],
+    #             "value_loss_coef": provisional["graph_gat_value_loss_coef"],
+    #             "max_grad_norm": provisional["graph_gat_max_grad_norm"],
+    #             "use_action_mask": provisional["graph_gat_use_action_mask"],
+    #             "topology_warmup_episodes": int(
+    #                 provisional["graph_gat_topology_warmup_episodes"]
+    #             ),
+    #             "topology_warmup_updates_per_step": int(
+    #                 provisional["graph_gat_topology_warmup_updates_per_step"]
+    #             ),
+    #             "topology_warmup_lr": provisional["graph_gat_topology_warmup_lr"],
+    #             "device": selected_graph_gat_device,
+    #         },
+    #     },
     }
     graph_overrides = {
         "lr": graph_gat_lr,
@@ -797,6 +815,12 @@ def _build_episode_tracking_metrics(
         "execution/wait_seconds": history["queue_or_wait_time"][-1],
         "penalty/count": history["penalty_count"][-1],
         "penalty/seconds": history["penalty_time"][-1],
+        "maddpg/replay_buffer_size": latest("replay_buffer_size"),
+        "maddpg/update_rounds": latest("maddpg_update_rounds"),
+        "maddpg/actor_loss": latest("maddpg_actor_loss"),
+        "maddpg/critic_loss": latest("maddpg_critic_loss"),
+        "maddpg/mean_q": latest("maddpg_mean_q"),
+        "maddpg/epsilon": latest("epsilon"),
         "simulation/local_compute_seconds": history["local_time"][-1],
         "simulation/edge_compute_seconds": history["server_time"][-1],
         "simulation/transfer_seconds": history["transfer_time"][-1],
@@ -858,7 +882,7 @@ def _update_agents_from_buffer(
     replay_buffer: MultiAgentReplayBuffer,
     batch_size: int,
     gamma: float,
-) -> None:
+) -> Dict[str, float]:
     """Update agents from replay buffer samples when available.
 
     Args:
@@ -867,10 +891,27 @@ def _update_agents_from_buffer(
         batch_size: Batch size for sampling.
         gamma: Discount factor.
     """
-    if len(replay_buffer) < batch_size:
-        return
+    if agents and all(
+        isinstance(agent, EpsilonATNMADDPGAgent) for agent in agents
+    ):
+        return update_maddpg_agents_from_buffer(
+            agents,
+            replay_buffer,
+            batch_size,
+            gamma,
+        )
 
-    state_b, action_b, reward_b, next_state_b = replay_buffer.sample(batch_size)
+    if len(replay_buffer) < batch_size:
+        return {
+            "update_rounds": 0.0,
+            "actor_loss": 0.0,
+            "critic_loss": 0.0,
+            "mean_q": 0.0,
+        }
+
+    state_b, action_b, reward_b, next_state_b, _ = replay_buffer.sample(
+        batch_size
+    )
     for agent_index, agent in enumerate(agents):
         action_dim = agent.action_dim
         action_b_onehot = F.one_hot(action_b.long(), num_classes=action_dim).float()
@@ -916,6 +957,12 @@ def _update_agents_from_buffer(
 
         if hasattr(agent, "update_epsilon"):
             agent.update_epsilon()
+    return {
+        "update_rounds": 1.0,
+        "actor_loss": 0.0,
+        "critic_loss": 0.0,
+        "mean_q": 0.0,
+    }
 
 
 def _update_agents_from_rollout(
@@ -974,6 +1021,11 @@ def train_algorithm(
     topology_metrics: Optional[Dict[str, object]] = None,
     experiment_note: str = "",
     experiment_tracker: Optional[ExperimentTracker] = None,
+    experiment_seed: Optional[int] = None,
+    episode_callback: Optional[
+        Callable[[int, Dict[str, List[float]]], None]
+    ] = None,
+    show_progress: bool = True,
 ) -> Tuple[Dict[str, List[float]], Optional[Dict[str, Any]]]:
     """Train one algorithm configuration and return metrics and checkpoint.
 
@@ -991,14 +1043,19 @@ def train_algorithm(
         topology_metrics: Optional topology metrics stored in checkpoints.
         experiment_note: Optional note stored in checkpoint metadata.
         experiment_tracker: Optional per-episode external metric tracker.
+        experiment_seed: Optional training seed override.
+        episode_callback: Optional callback invoked after each completed update.
+        show_progress: Whether to print progress and diagnostic summaries.
 
     Returns:
         Tuple of metric history and optional trainable model checkpoint payload.
     """
-    print(f"\n{'='*50}\nStarting Training for: {algo_name}\n{'='*50}")
+    if show_progress:
+        print(f"\n{'='*50}\nStarting Training for: {algo_name}\n{'='*50}")
     confirmed = PAPER_PARAMS["confirmed"]
     provisional = PAPER_PARAMS["provisional_table2_needed"]
-    experiment_seed = int(provisional["experiment_seed"])
+    if experiment_seed is None:
+        experiment_seed = int(provisional["experiment_seed"])
     set_seed(experiment_seed)  # Reset seed for fair comparison.
 
     time_slots = int(confirmed["time_slots"])
@@ -1044,7 +1101,8 @@ def train_algorithm(
                 **agent_config.get("kwargs", {}),
             )
         )
-        print(f"[{algo_name}] Graph-GAT device: {agents[0].device}")
+        if show_progress:
+            print(f"[{algo_name}] Graph-GAT device: {agents[0].device}")
     else:
         for _ in range(len(devices)):
             agent = agent_class(
@@ -1061,8 +1119,10 @@ def train_algorithm(
         not uses_graph_gat_mappo
         and all(hasattr(agent, "select_action_with_log_prob") for agent in agents)
     )
-    batch_size = int(provisional["batch_size"])
-    gamma = provisional["gamma"]
+    batch_size = int(agent_config.get("batch_size", provisional["batch_size"]))
+    gamma = float(
+        agent_config.get("kwargs", {}).get("gamma", provisional["gamma"])
+    )
     
     # Track metrics
     history = {
@@ -1082,6 +1142,12 @@ def train_algorithm(
         "requested_edge_count": [],
         "resolved_local_count": [],
         "resolved_edge_count": [],
+        "replay_buffer_size": [],
+        "maddpg_update_rounds": [],
+        "maddpg_actor_loss": [],
+        "maddpg_critic_loss": [],
+        "maddpg_mean_q": [],
+        "epsilon": [],
         "graph_build_time": [],
         "graph_warmup_time": [],
         "graph_warmup_loss": [],
@@ -1108,9 +1174,20 @@ def train_algorithm(
     }
 
     training_start_time = time.perf_counter()
-    episode_iterator = trange(num_episodes, desc=f"Training {algo_name}", leave=True)
+    episode_iterator = trange(
+        num_episodes,
+        desc=f"Training {algo_name}",
+        leave=True,
+        disable=not show_progress,
+    )
     for episode in episode_iterator:
         episode_start_time = time.perf_counter()
+        for agent in agents:
+            set_training_progress = getattr(
+                agent, "set_training_progress", None
+            )
+            if set_training_progress is not None:
+                set_training_progress(episode, num_episodes)
         env.reset_episode()
         count_local = 0
         count_edge = 0
@@ -1275,7 +1352,11 @@ def train_algorithm(
                     )
                 else:
                     replay_buffer.push(
-                        current_joint_state, joint_actions, joint_rewards, next_joint_state
+                        current_joint_state,
+                        joint_actions,
+                        joint_rewards,
+                        next_joint_state,
+                        done=step_episode_done,
                     )
                 episode_rollout_storage_time += (
                     time.perf_counter() - rollout_storage_start
@@ -1379,22 +1460,48 @@ def train_algorithm(
         history["graph_update_time"].append(episode_graph_update_time)
         history["graph_transition_count"].append(episode_graph_transition_count)
 
-        episode_iterator.set_postfix(
-            reward=f"{episode_avg_reward:.3f}",
-            delay=f"{episode_avg_delay:.3f}s",
-            energy=f"{episode_avg_energy:.3f}J",
-            actual=f"L{episode_resolved_local_count:.0f}/E{episode_resolved_edge_count:.0f}",
-            penalty=f"{episode_penalty_count:.0f}",
-        )
+        if show_progress:
+            episode_iterator.set_postfix(
+                reward=f"{episode_avg_reward:.3f}",
+                delay=f"{episode_avg_delay:.3f}s",
+                energy=f"{episode_avg_energy:.3f}J",
+                actual=(
+                    f"L{episode_resolved_local_count:.0f}/"
+                    f"E{episode_resolved_edge_count:.0f}"
+                ),
+                penalty=f"{episode_penalty_count:.0f}",
+            )
 
         # 4. Network Updates
         model_update_start = time.perf_counter()
+        maddpg_update_metrics = {
+            "update_rounds": 0.0,
+            "actor_loss": 0.0,
+            "critic_loss": 0.0,
+            "mean_q": 0.0,
+        }
         if uses_rollout_buffer:
             _update_agents_from_rollout(agents, rollout_buffer, gamma)
         elif not uses_graph_gat_mappo:
-            _update_agents_from_buffer(agents, replay_buffer, batch_size, gamma)
+            maddpg_update_metrics = _update_agents_from_buffer(
+                agents, replay_buffer, batch_size, gamma
+            )
         if not uses_graph_gat_mappo:
             episode_model_update_time = time.perf_counter() - model_update_start
+        history["replay_buffer_size"].append(float(len(replay_buffer)))
+        history["maddpg_update_rounds"].append(
+            maddpg_update_metrics["update_rounds"]
+        )
+        history["maddpg_actor_loss"].append(
+            maddpg_update_metrics["actor_loss"]
+        )
+        history["maddpg_critic_loss"].append(
+            maddpg_update_metrics["critic_loss"]
+        )
+        history["maddpg_mean_q"].append(maddpg_update_metrics["mean_q"])
+        history["epsilon"].append(
+            float(getattr(agents[0], "epsilon", 0.0))
+        )
 
         environment_runtime = env.get_runtime_metrics()
         episode_accounted_time = sum(
@@ -1447,7 +1554,9 @@ def train_algorithm(
         history["runtime_tracking_log_time"].append(0.0)
 
         episode_number = episode + 1
-        if _should_print_diagnostics(episode_number, num_episodes):
+        if show_progress and _should_print_diagnostics(
+            episode_number, num_episodes
+        ):
             episode_iterator.write(
                 _format_diagnostic_summary(algo_name, episode_number, history)
             )
@@ -1470,8 +1579,9 @@ def train_algorithm(
                 time.perf_counter() - tracking_log_start
             )
     
-        if episode_number == 1 or _should_print_diagnostics(
-            episode_number, num_episodes
+        if show_progress and (
+            episode_number == 1
+            or _should_print_diagnostics(episode_number, num_episodes)
         ):
             print(
                 f"[{algo_name}] Ep {episode_number}/{num_episodes} ----|--- Avg R/Slot: {history['reward'][-1]:.3f} "
@@ -1504,6 +1614,9 @@ def train_algorithm(
                     f"| Update: {history['graph_update_time'][-1]:.3f}s "
                     f"| Transitions: {history['graph_transition_count'][-1]:.0f}"
                 )
+
+        if episode_callback is not None:
+            episode_callback(episode_number, history)
             
     checkpoint = build_model_checkpoint(
         algo_name=algo_name,
@@ -1522,6 +1635,192 @@ def train_algorithm(
         experiment_seed=experiment_seed,
     )
     return history, checkpoint
+
+
+def evaluate_algorithm_checkpoint(
+    agent_config: Dict[str, object],
+    checkpoint: Dict[str, Any],
+    devices: Sequence[IndustrialDevice],
+    servers: Sequence[EdgeServer],
+    network_env: NetworkEnvironment,
+    data_loader: KolektorSDDLoader,
+    priority_model: torch.nn.Module,
+    num_episodes: int,
+    experiment_seed: int,
+    priority_mode: str = "gat",
+    topology_scenario: Optional[TopologyScenario] = None,
+) -> Dict[str, List[float]]:
+    """Evaluate a trained policy with deterministic actions.
+
+    Evaluation never performs optimizer updates, topology warmup, epsilon
+    exploration, or stochastic policy sampling.
+    """
+    confirmed = PAPER_PARAMS["confirmed"]
+    provisional = PAPER_PARAMS["provisional_table2_needed"]
+    set_seed(experiment_seed)
+    env = DITENEnv(
+        devices,
+        servers,
+        network_env,
+        slot_duration=confirmed["slot_duration_s"],
+        subslot_count=int(provisional["subslot_count"]),
+        time_slots=int(confirmed["time_slots"]),
+        lambda1=provisional["lambda1"],
+        lambda2=provisional["lambda2"],
+        lambda3=provisional["lambda3"],
+        lambda4=provisional["lambda4"],
+        lambda5=provisional["lambda5"],
+        p_out_value=provisional["p_out_value"],
+        local_estimation_error=provisional["local_estimation_error"],
+        edge_estimation_error=provisional["edge_estimation_error"],
+        route_rectangles=(
+            topology_scenario.route_rectangles
+            if topology_scenario is not None
+            else None
+        ),
+    )
+    state_dim = env.get_state_dim()
+    action_dim = 1 + len(servers)
+    agent_class = agent_config["class"]
+    uses_graph_gat_mappo = agent_class is GraphGATMAPPOAgent
+    agents: List[object] = []
+    if uses_graph_gat_mappo:
+        graph_dims = checkpoint.get("graph_dims", {})
+        agents.append(
+            agent_class(
+                num_devices=len(devices),
+                num_servers=len(servers),
+                node_feature_dim=int(graph_dims["node_feature_dim"]),
+                edge_feature_dim=int(graph_dims["edge_feature_dim"]),
+                **agent_config.get("kwargs", {}),
+            )
+        )
+    else:
+        agents = [
+            agent_class(
+                state_dim=state_dim,
+                action_dim=action_dim,
+                num_agents=len(devices),
+                **agent_config.get("kwargs", {}),
+            )
+            for _ in devices
+        ]
+
+    checkpoint_agents = checkpoint.get("agents", [])
+    if len(checkpoint_agents) != len(agents):
+        raise ValueError("checkpoint agent count does not match evaluation system")
+    for agent, agent_state in zip(agents, checkpoint_agents):
+        for module_name in (
+            "encoder",
+            "actor",
+            "critic",
+            "target_actor",
+            "target_critic",
+        ):
+            module_state = agent_state.get(module_name)
+            module = getattr(agent, module_name, None)
+            if module_state is not None and module is not None:
+                module.load_state_dict(module_state)
+                module.eval()
+
+    history = {
+        "reward": [],
+        "delay": [],
+        "energy": [],
+        "edge_ratio": [],
+        "resolved_edge_ratio": [],
+        "penalty_count": [],
+    }
+    time_slots = int(confirmed["time_slots"])
+    for _ in range(num_episodes):
+        env.reset_episode()
+        episode_done = False
+        slot_rewards = []
+        slot_delays = []
+        slot_energies = []
+        requested_edge_count = 0
+        resolved_edge_count = 0.0
+        total_action_count = 0
+        penalty_count = 0.0
+        for _ in range(time_slots):
+            if episode_done:
+                break
+            previous_delay = np.mean(
+                list(env.device_accumulated_delay.values())
+            )
+            previous_energy = np.mean(
+                list(env.device_accumulated_energy.values())
+            )
+            task_dags = generate_task_dags_for_episode(
+                devices,
+                data_loader,
+                t_max=provisional["t_max"],
+                e_max=provisional["e_max"],
+                cpu_cycle_scale=provisional["task_cpu_cycle_scale"],
+            )
+            priorities = build_priorities_by_mode(
+                task_dags, priority_model, priority_mode
+            )
+            current_joint_state = env.start_time_slot(task_dags, priorities)
+            slot_done = False
+            slot_reward = 0.0
+            slot_step_count = 0
+            while not slot_done and not episode_done:
+                if uses_graph_gat_mappo:
+                    graph_state = build_topology_graph_state(
+                        torch.as_tensor(
+                            current_joint_state, dtype=torch.float32
+                        ),
+                        num_devices=len(devices),
+                        num_servers=len(servers),
+                    )
+                    joint_actions = agents[0].select_greedy_actions(graph_state)
+                else:
+                    joint_actions = [
+                        agent.select_greedy_action(
+                            torch.as_tensor(
+                                current_joint_state[agent_index],
+                                dtype=torch.float32,
+                            )
+                        )
+                        for agent_index, agent in enumerate(agents)
+                    ]
+                requested_edge_count += sum(
+                    int(action > 0) for action in joint_actions
+                )
+                total_action_count += len(joint_actions)
+                next_joint_state, rewards, episode_done, info = env.step(
+                    joint_actions
+                )
+                slot_done = bool(info.get("slot_done", False))
+                summary = _summarize_step_metrics(env.last_step_metrics)
+                resolved_edge_count += summary["resolved_edge_count"]
+                penalty_count += summary["penalty_count"]
+                slot_reward += sum(rewards) / len(devices)
+                slot_step_count += 1
+                current_joint_state = next_joint_state
+
+            current_delay = np.mean(
+                list(env.device_accumulated_delay.values())
+            )
+            current_energy = np.mean(
+                list(env.device_accumulated_energy.values())
+            )
+            slot_rewards.append(slot_reward / max(slot_step_count, 1))
+            slot_delays.append(max(0.0, current_delay - previous_delay))
+            slot_energies.append(max(0.0, current_energy - previous_energy))
+
+        history["reward"].append(float(np.mean(slot_rewards)))
+        history["delay"].append(float(np.mean(slot_delays)))
+        history["energy"].append(float(np.mean(slot_energies)))
+        history["edge_ratio"].append(
+            100.0 * requested_edge_count / max(total_action_count, 1)
+        )
+        history["resolved_edge_ratio"].append(
+            100.0 * resolved_edge_count / max(total_action_count, 1)
+        )
+        history["penalty_count"].append(float(penalty_count))
+    return history
 
 if __name__ == "__main__":
     # 1. Base Environment Setup

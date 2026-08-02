@@ -269,6 +269,14 @@ class GraphGATMAPPOAgent:
                 [float(value) for value in log_probs.detach().cpu().tolist()],
             )
 
+    def select_greedy_actions(
+        self, graph_state: TopologyGraphState
+    ) -> List[int]:
+        """Choose highest-probability actions without policy sampling."""
+        with torch.no_grad():
+            probabilities = self._actor_probabilities_for_graph_state(graph_state)
+            return torch.argmax(probabilities, dim=-1).detach().cpu().tolist()
+
     def update_from_rollout(self, rollout_buffer: GraphGATRolloutBuffer) -> None:
         """Update encoder, actor, and critic from on-policy graph rollouts."""
         transitions = rollout_buffer.as_transitions()

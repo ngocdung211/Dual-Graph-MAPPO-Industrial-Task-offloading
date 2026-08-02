@@ -25,6 +25,30 @@ from utils.comparison_outputs import (
     build_plot_results,
 )
 from utils.paper_config import PAPER_PARAMS
+from tune_hyperparameters import (
+    MODEL_E_ATN_MADDPG,
+    MODEL_GRAPH_GAT_WARMUP_MAPPO,
+    MODEL_MAPPO,
+    build_agent_config_from_params,
+    build_default_trial_params,
+    phase_episode_budget,
+    suggest_agent_config,
+)
+
+
+class _FixedSuggestionTrial:
+    """Return predefined values through the Optuna trial suggestion API."""
+
+    def __init__(self, values):
+        self.values = values
+
+    def suggest_float(self, name, *args, **kwargs):
+        del args, kwargs
+        return self.values[name]
+
+    def suggest_categorical(self, name, choices):
+        assert self.values[name] in choices
+        return self.values[name]
 
 
 def test_summarize_step_metrics_counts_penalties_and_times() -> None:
@@ -142,6 +166,57 @@ def test_learning_algorithm_kwargs_use_config_values() -> None:
         configs["Graph-GAT Mask MAPPO"]["kwargs"]["use_action_mask"]
         == provisional["graph_gat_use_action_mask"]
     )
+
+
+def test_optuna_default_trials_build_requested_unmasked_models() -> None:
+    """Default enqueued trials should map to the three unmasked agents."""
+    for model_name in (
+        MODEL_E_ATN_MADDPG,
+        MODEL_MAPPO,
+        MODEL_GRAPH_GAT_WARMUP_MAPPO,
+    ):
+        trial = _FixedSuggestionTrial(build_default_trial_params(model_name))
+        config = suggest_agent_config(model_name, trial, "cpu")
+
+        assert config["kwargs"].get("use_action_mask", False) is False
+    e_atn_config = suggest_agent_config(
+        MODEL_E_ATN_MADDPG,
+        _FixedSuggestionTrial(
+            build_default_trial_params(MODEL_E_ATN_MADDPG)
+        ),
+        "cpu",
+    )
+    assert e_atn_config["kwargs"]["use_attention"] is True
+    assert e_atn_config["kwargs"]["use_epsilon_greedy"] is True
+
+
+def test_stored_optuna_params_rebuild_exact_unmasked_configs() -> None:
+    """Rerank/final stages should reconstruct search configs without masks."""
+    for model_name in (
+        MODEL_E_ATN_MADDPG,
+        MODEL_MAPPO,
+        MODEL_GRAPH_GAT_WARMUP_MAPPO,
+    ):
+        params = build_default_trial_params(model_name)
+        direct_config = build_agent_config_from_params(
+            model_name, params, "cpu"
+        )
+        trial_config = suggest_agent_config(
+            model_name, _FixedSuggestionTrial(params), "cpu"
+        )
+
+        assert direct_config == trial_config
+        assert direct_config["kwargs"].get("use_action_mask", False) is False
+
+
+def test_tuning_phase_budgets_match_balanced_plan() -> None:
+    """Search, rerank, and final should use the agreed episode budgets."""
+    assert phase_episode_budget("search", None) == 150
+    assert phase_episode_budget("rerank", None) == 500
+    assert phase_episode_budget("final", None) == 1000
+    assert phase_episode_budget("final", 2) == 2
+    with pytest.raises(ValueError, match="episodes must be positive"):
+        phase_episode_budget("search", 0)
 
 
 def test_fixed_baseline_plot_results_are_mean_flat_lines() -> None:

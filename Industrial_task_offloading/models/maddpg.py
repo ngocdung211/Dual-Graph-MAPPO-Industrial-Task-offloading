@@ -144,9 +144,16 @@ class EpsilonATNMADDPGAgent:
         action_dim: int,
         num_agents: int,
         lr: float = 0.0001,
+        actor_lr: float | None = None,
+        critic_lr: float | None = None,
+        gamma: float = 0.99,
+        tau: float = 0.01,
+        hidden_dim: int = 64,
         epsilon_init: float = 1.0,
         epsilon_min: float = 0.01,
         decay: float = 0.998,
+        epsilon_final: float | None = None,
+        exploration_fraction: float = 0.4,
         use_attention: bool = True,
         use_epsilon_greedy: bool = True,
     ):
@@ -156,32 +163,69 @@ class EpsilonATNMADDPGAgent:
             state_dim: Per-agent state dimension.
             action_dim: Number of actions.
             num_agents: Number of agents in the system.
-            lr: Learning rate.
+            lr: Backward-compatible shared actor/critic learning rate.
+            actor_lr: Optional actor learning rate. Uses ``lr`` when omitted.
+            critic_lr: Optional critic learning rate. Uses ``lr`` when omitted.
+            gamma: Reward discount factor.
+            tau: Target-network soft-update coefficient.
+            hidden_dim: Actor, critic, and attention hidden width.
             epsilon_init: Initial epsilon for exploration.
             epsilon_min: Minimum epsilon value.
             decay: Epsilon decay factor.
+            epsilon_final: Final progress-scheduled epsilon. Uses
+                ``epsilon_min`` when omitted.
+            exploration_fraction: Fraction of training used to linearly decay
+                epsilon from its initial to final value.
             use_attention: Whether to use attention in the critic.
             use_epsilon_greedy: Enable epsilon-greedy exploration.
         """
+        if not 0.0 < exploration_fraction <= 1.0:
+            raise ValueError("exploration_fraction must be in (0, 1]")
         self.action_dim = action_dim
+        self.gamma = gamma
+        self.tau = tau
         self.use_epsilon_greedy = use_epsilon_greedy
         
         # Networks
-        self.actor = ActorNetwork(state_dim, action_dim)
-        self.target_actor = ActorNetwork(state_dim, action_dim)
+        self.actor = ActorNetwork(state_dim, action_dim, hidden_dim=hidden_dim)
+        self.target_actor = ActorNetwork(
+            state_dim, action_dim, hidden_dim=hidden_dim
+        )
         self.target_actor.load_state_dict(self.actor.state_dict())
         
-        self.critic = CriticNetwork(state_dim, action_dim, num_agents, use_attention=use_attention)
-        self.target_critic = CriticNetwork(state_dim, action_dim, num_agents, use_attention=use_attention)
+        self.critic = CriticNetwork(
+            state_dim,
+            action_dim,
+            num_agents,
+            hidden_dim=hidden_dim,
+            use_attention=use_attention,
+        )
+        self.target_critic = CriticNetwork(
+            state_dim,
+            action_dim,
+            num_agents,
+            hidden_dim=hidden_dim,
+            use_attention=use_attention,
+        )
         self.target_critic.load_state_dict(self.critic.state_dict())
         
-        # Optimizers (learning rate of 0.0001 as proven optimal in the paper)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr)
+        self.actor_optimizer = optim.Adam(
+            self.actor.parameters(), lr=lr if actor_lr is None else actor_lr
+        )
+        self.critic_optimizer = optim.Adam(
+            self.critic.parameters(), lr=lr if critic_lr is None else critic_lr
+        )
         
         # Epsilon-greedy parameters
+        self.epsilon_init = epsilon_init
         self.epsilon = epsilon_init
         self.epsilon_min = epsilon_min
+        self.epsilon_final = (
+            epsilon_min if epsilon_final is None else epsilon_final
+        )
+        if not 0.0 <= self.epsilon_final <= self.epsilon_init:
+            raise ValueError("epsilon_final must be between 0 and epsilon_init")
+        self.exploration_fraction = exploration_fraction
         self.decay = decay
 
     def select_action(self, state: torch.Tensor) -> int:
@@ -202,18 +246,50 @@ class EpsilonATNMADDPGAgent:
             action_probs = self.actor(state)
             return torch.argmax(action_probs).item()
 
+    def select_greedy_action(self, state: torch.Tensor) -> int:
+        """Choose the actor argmax without epsilon exploration."""
+        with torch.no_grad():
+            return int(torch.argmax(self.actor(state)).item())
+
+    def set_training_progress(
+        self, completed_episodes: int, total_episodes: int
+    ) -> None:
+        """Set epsilon from normalized training progress."""
+        if not self.use_epsilon_greedy:
+            return
+        training_progress = completed_episodes / max(total_episodes, 1)
+        decay_progress = min(
+            training_progress / self.exploration_fraction,
+            1.0,
+        )
+        self.epsilon = self.epsilon_init + decay_progress * (
+            self.epsilon_final - self.epsilon_init
+        )
+
     def update_epsilon(self) -> None:
         """Decay epsilon over time to shift from exploration to exploitation."""
         if self.use_epsilon_greedy:
             self.epsilon = max(self.epsilon * self.decay, self.epsilon_min)
 
-    def soft_update(self, target_net: nn.Module, source_net: nn.Module, tau: float = 0.01) -> None:
+    def soft_update(
+        self,
+        target_net: nn.Module,
+        source_net: nn.Module,
+        tau: float | None = None,
+    ) -> None:
         """Soft-update target network parameters.
 
         Args:
             target_net: Target network to update.
             source_net: Source network providing parameters.
-            tau: Interpolation factor.
+            tau: Optional interpolation factor. Uses the agent value when omitted.
         """
-        for target_param, source_param in zip(target_net.parameters(), source_net.parameters()):
-            target_param.data.copy_(tau * source_param.data + (1.0 - tau) * target_param.data)
+        selected_tau = self.tau if tau is None else tau
+        parameter_pairs = zip(
+            target_net.parameters(), source_net.parameters()
+        )
+        for target_param, source_param in parameter_pairs:
+            target_param.data.copy_(
+                selected_tau * source_param.data
+                + (1.0 - selected_tau) * target_param.data
+            )

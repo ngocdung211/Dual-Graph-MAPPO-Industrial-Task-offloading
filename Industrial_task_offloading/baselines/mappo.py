@@ -130,9 +130,15 @@ class MAPPOAgent:
         action_dim: int,
         num_agents: int,
         lr: float = 0.0001,
+        actor_lr: float | None = None,
+        critic_lr: float | None = None,
         gamma: float = 0.99,
         clip_param: float = 0.2,
         ppo_epochs: int = 4,
+        entropy_coef: float = 0.01,
+        value_loss_coef: float = 1.0,
+        max_grad_norm: float | None = None,
+        hidden_dim: int = 64,
         use_action_mask: bool = False,
     ):
         """Initialize the MAPPO agent.
@@ -141,23 +147,38 @@ class MAPPOAgent:
             state_dim: Per-agent state dimension.
             action_dim: Number of actions.
             num_agents: Number of agents in the system.
-            lr: Learning rate.
+            lr: Backward-compatible shared actor/critic learning rate.
+            actor_lr: Optional actor learning rate. Uses ``lr`` when omitted.
+            critic_lr: Optional critic learning rate. Uses ``lr`` when omitted.
             gamma: Discount factor.
             clip_param: PPO clipping parameter.
             ppo_epochs: PPO epochs per update.
+            entropy_coef: Entropy bonus coefficient in the actor loss.
+            value_loss_coef: Critic loss multiplier.
+            max_grad_norm: Optional actor/critic gradient clipping norm.
+            hidden_dim: Actor and critic hidden width.
             use_action_mask: Whether to mask disconnected edge-server actions.
         """
         self.action_dim = action_dim
         self.gamma = gamma
         self.clip_param = clip_param
         self.ppo_epochs = ppo_epochs
+        self.entropy_coef = entropy_coef
+        self.value_loss_coef = value_loss_coef
+        self.max_grad_norm = max_grad_norm
         self.use_action_mask = use_action_mask
         
-        self.actor = StochasticActor(state_dim, action_dim)
-        self.critic = CentralizedValueCritic(state_dim, num_agents)
+        self.actor = StochasticActor(state_dim, action_dim, hidden_dim=hidden_dim)
+        self.critic = CentralizedValueCritic(
+            state_dim, num_agents, hidden_dim=hidden_dim
+        )
         
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr)
+        self.actor_optimizer = optim.Adam(
+            self.actor.parameters(), lr=lr if actor_lr is None else actor_lr
+        )
+        self.critic_optimizer = optim.Adam(
+            self.critic.parameters(), lr=lr if critic_lr is None else critic_lr
+        )
         self.last_action_log_prob = None
 
     def select_action(self, state: torch.Tensor) -> int:
@@ -189,6 +210,15 @@ class MAPPOAgent:
             action = distribution.sample()
             log_prob = distribution.log_prob(action)
             return action.item(), float(log_prob.item())
+
+    def select_greedy_action(self, state: torch.Tensor) -> int:
+        """Choose the highest-probability action without sampling."""
+        with torch.no_grad():
+            probabilities = self.actor(state)
+            probabilities = self._masked_action_probabilities(
+                probabilities, state
+            )
+            return int(torch.argmax(probabilities).item())
 
     def _action_mask_from_state(self, state: torch.Tensor) -> torch.Tensor:
         """Return valid local/server actions from flat connection windows."""
@@ -295,7 +325,10 @@ class MAPPOAgent:
             surr2 = torch.clamp(ratios, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantages.squeeze()
             
             # Actor Loss: Maximize surrogate objective -> minimize negative
-            actor_loss = -torch.min(surr1, surr2).mean() - 0.01 * entropy 
+            actor_loss = (
+                -torch.min(surr1, surr2).mean()
+                - self.entropy_coef * entropy
+            )
             
             # Critic Loss: Standard MSE
             critic_loss = F.mse_loss(current_v_epoch, target_v)
@@ -303,9 +336,17 @@ class MAPPOAgent:
             # Optimize Actor
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
+            if self.max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(
+                    self.actor.parameters(), self.max_grad_norm
+                )
             self.actor_optimizer.step()
             
             # Optimize Critic
             self.critic_optimizer.zero_grad()
-            critic_loss.backward()
+            (self.value_loss_coef * critic_loss).backward()
+            if self.max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(
+                    self.critic.parameters(), self.max_grad_norm
+                )
             self.critic_optimizer.step()
