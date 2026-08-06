@@ -81,11 +81,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--phase",
-        choices=("search", "rerank", "final"),
+        choices=("search", "rerank", "final", "transfer"),
         default="search",
         help=(
             "search runs Optuna, rerank trains each top-three configuration, "
-            "and final trains the rerank winner"
+            "final trains the rerank winner, and transfer trains Graph-GAT "
+            "with a MAPPO PPO core"
         ),
     )
     parser.add_argument(
@@ -98,7 +99,10 @@ def parse_args() -> argparse.Namespace:
         "--episodes",
         type=int,
         default=None,
-        help="Override the phase budget (search=150, rerank=500, final=1000).",
+        help=(
+            "Override the phase budget (search/transfer=150, rerank=500, "
+            "final=1000)."
+        ),
     )
     parser.add_argument("--train-seed", type=int, default=75)
     parser.add_argument(
@@ -130,6 +134,19 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional Optuna storage URL. Defaults to SQLite in output-dir.",
     )
+    parser.add_argument(
+        "--mappo-params-path",
+        default="",
+        help="MAPPO best-params JSON used by the Graph-GAT transfer phase.",
+    )
+    parser.add_argument(
+        "--graph-params-path",
+        default="",
+        help=(
+            "Graph-GAT best-params JSON supplying encoder and warmup settings "
+            "for the transfer phase."
+        ),
+    )
     parser.add_argument("--timeout-seconds", type=int, default=None)
     return parser.parse_args()
 
@@ -140,7 +157,51 @@ def phase_episode_budget(phase: str, override: int | None) -> int:
         if override <= 0:
             raise ValueError("episodes must be positive")
         return override
-    return {"search": 150, "rerank": 500, "final": 1000}[phase]
+    return {
+        "search": 150,
+        "rerank": 500,
+        "final": 1000,
+        "transfer": 150,
+    }[phase]
+
+
+def load_best_params(path: str, expected_model: str) -> Dict[str, object]:
+    """Load and validate one tuning best-params JSON file."""
+    input_path = Path(path)
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    if payload.get("model") != expected_model:
+        raise ValueError(
+            f"expected {expected_model} parameters in {input_path}, "
+            f"found {payload.get('model')!r}"
+        )
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        raise ValueError(f"missing params object in {input_path}")
+    return params
+
+
+def build_graph_transfer_params(
+    mappo_params: Dict[str, object],
+    graph_params: Dict[str, object],
+) -> Dict[str, object]:
+    """Combine MAPPO PPO settings with Graph-GAT-specific settings."""
+    return {
+        "actor_lr": mappo_params["actor_lr"],
+        "critic_lr": mappo_params["critic_lr"],
+        "gamma": mappo_params["gamma"],
+        "clip_param": mappo_params["clip_param"],
+        "ppo_epochs": mappo_params["ppo_epochs"],
+        "entropy_coef": mappo_params["entropy_coef"],
+        "value_loss_coef": mappo_params["value_loss_coef"],
+        "max_grad_norm": mappo_params["max_grad_norm"],
+        "hidden_dim": mappo_params["hidden_dim"],
+        "encoder_lr": graph_params["encoder_lr"],
+        "warmup_episodes": graph_params["warmup_episodes"],
+        "warmup_updates_per_step": graph_params[
+            "warmup_updates_per_step"
+        ],
+        "warmup_lr": graph_params["warmup_lr"],
+    }
 
 
 def build_default_trial_params(model_name: str) -> Dict[str, object]:
@@ -325,13 +386,22 @@ def build_agent_config_from_params(
             },
         }
     if model_name == MODEL_GRAPH_GAT_WARMUP_MAPPO:
+        shared_lr = params.get("lr")
+        actor_lr = params.get("actor_lr", shared_lr)
+        critic_lr = params.get("critic_lr", shared_lr)
+        if actor_lr is None or critic_lr is None:
+            raise ValueError(
+                "Graph-GAT params require lr or both actor_lr and critic_lr"
+            )
         return {
             "class": GraphGATMAPPOAgent,
             "kwargs": {
-                "lr": float(params["lr"]),
+                "lr": float(actor_lr),
+                "actor_lr": float(actor_lr),
+                "critic_lr": float(critic_lr),
                 "encoder_lr": float(params["encoder_lr"]),
-                "gamma": 0.99,
-                "hidden_dim": 64,
+                "gamma": float(params.get("gamma", 0.99)),
+                "hidden_dim": int(params.get("hidden_dim", 64)),
                 "embedding_dim": 64,
                 "clip_param": float(params["clip_param"]),
                 "ppo_epochs": int(params["ppo_epochs"]),
@@ -520,8 +590,24 @@ def run_seeded_stage(
     input_dir: Path,
     output_dir: Path,
 ) -> Dict[str, object]:
-    """Rerank search candidates or train the winner over three seeds."""
-    candidates = _load_stage_candidates(model_name, phase, input_dir)
+    """Run one configured rerank, final, or transfer training stage."""
+    if phase == "transfer":
+        mappo_params = load_best_params(
+            args.mappo_params_path, MODEL_MAPPO
+        )
+        graph_params = load_best_params(
+            args.graph_params_path, MODEL_GRAPH_GAT_WARMUP_MAPPO
+        )
+        candidates = [
+            {
+                "number": "MAPPO-PPO-transfer",
+                "params": build_graph_transfer_params(
+                    mappo_params, graph_params
+                ),
+            }
+        ]
+    else:
+        candidates = _load_stage_candidates(model_name, phase, input_dir)
     candidate_results = []
     for candidate_index, candidate in enumerate(candidates, start=1):
         params = candidate["params"]
@@ -586,9 +672,9 @@ def run_seeded_stage(
                     ),
                 }
             )
-            if phase == "final":
+            if phase in ("final", "transfer"):
                 checkpoint_path = output_dir / (
-                    f"{_safe_model_name(model_name)}_final_seed"
+                    f"{_safe_model_name(model_name)}_{phase}_seed"
                     f"{train_seed}_checkpoint.pt"
                 )
                 torch.save(checkpoint, checkpoint_path)
@@ -630,6 +716,11 @@ def run_seeded_stage(
         "candidates": ranked_results,
         "winner": ranked_results[0],
     }
+    if phase == "transfer":
+        payload["parameter_sources"] = {
+            "mappo_ppo": args.mappo_params_path,
+            "graph_encoder_warmup": args.graph_params_path,
+        }
     output_path = output_dir / (
         f"{_safe_model_name(model_name)}_{phase}.json"
     )
@@ -792,8 +883,18 @@ def run_study(
 
 
 def main() -> None:
-    """Run search, seeded reranking, or final seeded training."""
+    """Run search, reranking, final training, or Graph-GAT transfer."""
     args = parse_args()
+    if args.phase == "transfer":
+        if args.models != [MODEL_GRAPH_GAT_WARMUP_MAPPO]:
+            raise SystemExit(
+                "transfer phase requires --models \"Graph-GAT Warmup MAPPO\""
+            )
+        if not args.mappo_params_path or not args.graph_params_path:
+            raise SystemExit(
+                "transfer phase requires --mappo-params-path and "
+                "--graph-params-path"
+            )
     if args.phase == "search" and optuna is None:
         raise SystemExit(
             "Optuna is not installed. Run: pip install -r requirements-optuna.txt"
@@ -811,7 +912,7 @@ def main() -> None:
         )
     else:
         raise SystemExit(
-            "--input-dir or --output-dir is required for rerank/final"
+            "--input-dir or --output-dir is required outside search"
         )
     output_dir.mkdir(parents=True, exist_ok=True)
     input_dir = Path(args.input_dir) if args.input_dir else output_dir

@@ -147,6 +147,33 @@ def test_topology_gat_batched_local_encoder_backpropagates_gradients() -> None:
     assert any(torch.any(gradient != 0.0) for gradient in gradients)
 
 
+def test_topology_gat_batched_local_returns_server_embeddings() -> None:
+    """Local encoding should preserve one server embedding per device pair."""
+    graph_state = build_topology_graph_state(
+        _make_joint_state(), num_devices=2, num_servers=2
+    )
+    encoder = TopologyGATEncoder(
+        node_feature_dim=14,
+        edge_feature_dim=7,
+        hidden_dim=16,
+        embedding_dim=8,
+    )
+    edge_features = graph_state.edge_features.reshape(2, 2, 2, 7)
+
+    device_embeddings, server_embeddings = (
+        encoder.forward_batched_local_nodes(
+            device_features=graph_state.node_features[:2],
+            server_features=graph_state.node_features[2:],
+            forward_edge_features=edge_features[:, :, 0, :],
+            backward_edge_features=edge_features[:, :, 1, :],
+        )
+    )
+
+    assert device_embeddings.shape == (2, 8)
+    assert server_embeddings.shape == (2, 2, 8)
+    assert torch.isfinite(server_embeddings).all()
+
+
 def test_batched_global_embeddings_match_graph_encoder() -> None:
     """Dense global encoding should preserve the complete graph calculation."""
     torch.manual_seed(53)

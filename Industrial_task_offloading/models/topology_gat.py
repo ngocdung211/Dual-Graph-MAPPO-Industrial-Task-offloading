@@ -458,19 +458,40 @@ class TopologyGATEncoder(nn.Module):
         Returns:
             Device embeddings shaped ``(num_devices, embedding_dim)``.
         """
+        encoded_devices, _ = self.forward_batched_local_nodes(
+            device_features,
+            server_features,
+            forward_edge_features,
+            backward_edge_features,
+        )
+        return encoded_devices
+
+    def forward_batched_local_nodes(
+        self,
+        device_features: torch.Tensor,
+        server_features: torch.Tensor,
+        forward_edge_features: torch.Tensor,
+        backward_edge_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return device and per-device server embeddings for local graphs.
+
+        Returns:
+            Device embeddings shaped ``(num_devices, embedding_dim)`` and
+            server embeddings shaped
+            ``(num_devices, num_servers, embedding_dim)``.
+        """
         hidden_devices, hidden_servers = self.gat1.forward_batched_local(
             device_features,
             server_features,
             forward_edge_features,
             backward_edge_features,
         )
-        encoded_devices, _ = self.gat2.forward_batched_local(
+        return self.gat2.forward_batched_local(
             F.elu(hidden_devices),
             F.elu(hidden_servers),
             forward_edge_features,
             backward_edge_features,
         )
-        return encoded_devices
 
     def forward_batched_global(
         self,
@@ -532,12 +553,34 @@ class TopologyGATEncoder(nn.Module):
             Local device embeddings shaped
             ``(time_steps, num_devices, embedding_dim)``.
         """
+        encoded_devices, _ = self.forward_batched_local_rollout_nodes(
+            device_features,
+            server_features,
+            forward_edge_features,
+            backward_edge_features,
+        )
+        return encoded_devices
+
+    def forward_batched_local_rollout_nodes(
+        self,
+        device_features: torch.Tensor,
+        server_features: torch.Tensor,
+        forward_edge_features: torch.Tensor,
+        backward_edge_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return device and server embeddings for rollout local graphs.
+
+        Returns:
+            Device embeddings shaped
+            ``(time_steps, num_devices, embedding_dim)`` and server embeddings
+            shaped ``(time_steps, num_devices, num_servers, embedding_dim)``.
+        """
         time_steps, num_devices = device_features.shape[:2]
         num_servers = server_features.shape[1]
         batched_servers = server_features.unsqueeze(1).expand(
             -1, num_devices, -1, -1
         )
-        encoded_devices = self.forward_batched_local(
+        encoded_devices, encoded_servers = self.forward_batched_local_nodes(
             device_features.reshape(time_steps * num_devices, -1),
             batched_servers.reshape(
                 time_steps * num_devices, num_servers, -1
@@ -549,7 +592,12 @@ class TopologyGATEncoder(nn.Module):
                 time_steps * num_devices, num_servers, -1
             ),
         )
-        return encoded_devices.reshape(time_steps, num_devices, -1)
+        return (
+            encoded_devices.reshape(time_steps, num_devices, -1),
+            encoded_servers.reshape(
+                time_steps, num_devices, num_servers, -1
+            ),
+        )
 
     def forward_batched_global_rollout(
         self,

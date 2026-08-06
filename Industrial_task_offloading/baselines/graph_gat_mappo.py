@@ -15,26 +15,53 @@ from utils.topology_graph_state import TopologyGraphState
 
 
 class GraphGATActor(nn.Module):
-    """Shared actor head that maps device embeddings to action probabilities."""
+    """Score local execution and each device-server pair independently."""
 
-    def __init__(self, embedding_dim: int, action_dim: int, hidden_dim: int = 64):
+    def __init__(
+        self,
+        embedding_dim: int,
+        edge_feature_dim: int,
+        hidden_dim: int = 64,
+    ):
         """Initialize the actor head.
 
         Args:
-            embedding_dim: Device embedding dimension from the GAT encoder.
-            action_dim: Number of offloading actions.
+            embedding_dim: Device and server GAT embedding dimension.
+            edge_feature_dim: Device-server edge feature dimension.
             hidden_dim: Hidden layer width.
         """
         super(GraphGATActor, self).__init__()
-        self.fc1 = nn.Linear(embedding_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, action_dim)
+        self.local_fc1 = nn.Linear(embedding_dim, hidden_dim)
+        self.local_fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.local_output = nn.Linear(hidden_dim, 1)
+        pair_feature_dim = 2 * embedding_dim + edge_feature_dim
+        self.server_fc1 = nn.Linear(pair_feature_dim, hidden_dim)
+        self.server_fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.server_output = nn.Linear(hidden_dim, 1)
 
-    def forward(self, device_embeddings: torch.Tensor) -> torch.Tensor:
-        """Return action probabilities for each device embedding."""
-        x = F.relu(self.fc1(device_embeddings))
-        x = F.relu(self.fc2(x))
-        return F.softmax(self.fc3(x), dim=-1)
+    def forward(
+        self,
+        device_embeddings: torch.Tensor,
+        server_embeddings: torch.Tensor,
+        edge_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return local and server-conditioned action probabilities."""
+        local_hidden = F.relu(self.local_fc1(device_embeddings))
+        local_hidden = F.relu(self.local_fc2(local_hidden))
+        local_logits = self.local_output(local_hidden)
+
+        expanded_devices = device_embeddings.unsqueeze(-2).expand_as(
+            server_embeddings
+        )
+        pair_features = torch.cat(
+            [expanded_devices, server_embeddings, edge_features], dim=-1
+        )
+        server_hidden = F.relu(self.server_fc1(pair_features))
+        server_hidden = F.relu(self.server_fc2(server_hidden))
+        server_logits = self.server_output(server_hidden).squeeze(-1)
+
+        action_logits = torch.cat([local_logits, server_logits], dim=-1)
+        return F.softmax(action_logits, dim=-1)
 
 
 class GraphGATValueCritic(nn.Module):
@@ -67,27 +94,38 @@ class GraphGATValueCritic(nn.Module):
 
 
 class TopologyWarmupHead(nn.Module):
-    """Predict link feasibility and window quality from local device embeddings."""
+    """Predict topology targets from each device-server embedding pair."""
 
-    def __init__(self, embedding_dim: int, num_servers: int, hidden_dim: int = 64):
+    def __init__(self, embedding_dim: int, hidden_dim: int = 64):
         """Initialize topology warmup prediction head.
 
         Args:
             embedding_dim: Device embedding dimension from local GAT subgraph.
-            num_servers: Number of edge servers.
             hidden_dim: Hidden layer width.
         """
         super(TopologyWarmupHead, self).__init__()
-        self.fc1 = nn.Linear(embedding_dim, hidden_dim)
+        self.fc1 = nn.Linear(2 * embedding_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.feasible_head = nn.Linear(hidden_dim, num_servers)
-        self.window_head = nn.Linear(hidden_dim, num_servers)
+        self.feasible_head = nn.Linear(hidden_dim, 1)
+        self.window_head = nn.Linear(hidden_dim, 1)
 
-    def forward(self, local_embeddings: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return feasible logits and normalized window estimates per server."""
-        x = F.relu(self.fc1(local_embeddings))
+    def forward(
+        self,
+        device_embeddings: torch.Tensor,
+        server_embeddings: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return feasibility logits and window estimates for every pair."""
+        expanded_devices = device_embeddings.unsqueeze(-2).expand_as(
+            server_embeddings
+        )
+        pair_embeddings = torch.cat(
+            [expanded_devices, server_embeddings], dim=-1
+        )
+        x = F.relu(self.fc1(pair_embeddings))
         x = F.relu(self.fc2(x))
-        return self.feasible_head(x), torch.sigmoid(self.window_head(x))
+        feasible_logits = self.feasible_head(x).squeeze(-1)
+        window_estimates = torch.sigmoid(self.window_head(x).squeeze(-1))
+        return feasible_logits, window_estimates
 
 
 @dataclass(frozen=True)
@@ -155,6 +193,8 @@ class GraphGATMAPPOAgent:
         embedding_dim: int = 64,
         hidden_dim: int = 64,
         lr: float = 0.0001,
+        actor_lr: Optional[float] = None,
+        critic_lr: Optional[float] = None,
         encoder_lr: Optional[float] = None,
         gamma: float = 0.99,
         clip_param: float = 0.2,
@@ -177,7 +217,11 @@ class GraphGATMAPPOAgent:
             edge_feature_dim: Input topology edge feature dimension.
             embedding_dim: GAT device embedding dimension.
             hidden_dim: Hidden layer width.
-            lr: Learning rate.
+            lr: Fallback actor, critic, and encoder learning rate.
+            actor_lr: Optional actor-specific learning rate. Uses ``lr`` when
+                omitted.
+            critic_lr: Optional critic-specific learning rate. Uses ``lr``
+                when omitted.
             encoder_lr: Optional encoder-specific learning rate. Uses ``lr``
                 when omitted.
             gamma: Discount factor.
@@ -215,7 +259,7 @@ class GraphGATMAPPOAgent:
         )
         self.actor = GraphGATActor(
             embedding_dim=embedding_dim,
-            action_dim=self.action_dim,
+            edge_feature_dim=edge_feature_dim,
             hidden_dim=hidden_dim,
         )
         self.critic = GraphGATValueCritic(
@@ -225,7 +269,6 @@ class GraphGATMAPPOAgent:
         )
         self.topology_warmup_head = TopologyWarmupHead(
             embedding_dim=embedding_dim,
-            num_servers=num_servers,
             hidden_dim=hidden_dim,
         )
         self.encoder.to(self.device)
@@ -244,9 +287,12 @@ class GraphGATMAPPOAgent:
                     "lr": lr if encoder_lr is None else encoder_lr,
                 },
                 {
-                    "params": list(self.actor.parameters())
-                    + list(self.critic.parameters()),
-                    "lr": lr,
+                    "params": self.actor.parameters(),
+                    "lr": lr if actor_lr is None else actor_lr,
+                },
+                {
+                    "params": self.critic.parameters(),
+                    "lr": lr if critic_lr is None else critic_lr,
                 },
             ]
         )
@@ -377,9 +423,11 @@ class GraphGATMAPPOAgent:
         feasible_targets, window_targets = self._topology_warmup_targets(graph_state)
         last_loss = 0.0
         for _ in range(update_count):
-            local_embeddings = self._encode_local_actor_embeddings(graph_state)
+            device_embeddings, server_embeddings = (
+                self._encode_local_actor_nodes(graph_state)
+            )
             feasible_logits, window_estimates = self.topology_warmup_head(
-                local_embeddings
+                device_embeddings, server_embeddings
             )
             feasible_loss = F.binary_cross_entropy_with_logits(
                 feasible_logits, feasible_targets
@@ -407,14 +455,30 @@ class GraphGATMAPPOAgent:
         self, graph_state: TopologyGraphState
     ) -> torch.Tensor:
         """Return actor probabilities from per-device local subgraph embeddings."""
-        local_embeddings = self._encode_local_actor_embeddings(graph_state)
-        probabilities = self.actor(local_embeddings)
+        device_embeddings, server_embeddings = (
+            self._encode_local_actor_nodes(graph_state)
+        )
+        forward_edge_features = self._device_server_edge_features(
+            graph_state
+        ).to(self.device)[:, :, 0, :]
+        probabilities = self.actor(
+            device_embeddings,
+            server_embeddings,
+            forward_edge_features,
+        )
         return self._masked_action_probabilities(probabilities, graph_state)
 
     def _encode_local_actor_embeddings(
         self, graph_state: TopologyGraphState
     ) -> torch.Tensor:
-        """Encode all independent device-server local graphs in one batch."""
+        """Return device embeddings from local device-server graphs."""
+        device_embeddings, _ = self._encode_local_actor_nodes(graph_state)
+        return device_embeddings
+
+    def _encode_local_actor_nodes(
+        self, graph_state: TopologyGraphState
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return device and server embeddings from batched local graphs."""
         device_features = self._selected_node_features(
             graph_state, graph_state.device_node_indices
         )
@@ -422,7 +486,7 @@ class GraphGATMAPPOAgent:
             graph_state, graph_state.server_node_indices
         )
         edge_features = self._device_server_edge_features(graph_state).to(self.device)
-        return self.encoder.forward_batched_local(
+        return self.encoder.forward_batched_local_nodes(
             device_features=device_features,
             server_features=server_features,
             forward_edge_features=edge_features[:, :, 0, :],
@@ -622,14 +686,21 @@ class GraphGATMAPPOAgent:
             forward_edge_features,
             backward_edge_features,
         ) = self._stack_graph_features(graph_states)
-        local_embeddings = self.encoder.forward_batched_local_rollout(
-            device_features,
-            server_features,
-            forward_edge_features,
-            backward_edge_features,
+        device_embeddings, server_embeddings = (
+            self.encoder.forward_batched_local_rollout_nodes(
+                device_features,
+                server_features,
+                forward_edge_features,
+                backward_edge_features,
+            )
         )
         probabilities = self._masked_action_probabilities_for_edges(
-            self.actor(local_embeddings), forward_edge_features
+            self.actor(
+                device_embeddings,
+                server_embeddings,
+                forward_edge_features,
+            ),
+            forward_edge_features,
         )
         distribution = Categorical(probabilities)
         global_embeddings = self.encoder.forward_batched_global_rollout(

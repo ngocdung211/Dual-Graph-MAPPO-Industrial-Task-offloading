@@ -211,8 +211,15 @@ def test_graph_gat_mappo_masks_disconnected_server_actions() -> None:
         embedding_dim=8,
     )
     graph_state = _make_graph_state()
-    device_embeddings = agent._encode_graph(graph_state)
-    probabilities = agent.actor(device_embeddings)
+    device_embeddings, server_embeddings = agent._encode_local_actor_nodes(
+        graph_state
+    )
+    forward_edge_features = agent._device_server_edge_features(
+        graph_state
+    )[:, :, 0, :]
+    probabilities = agent.actor(
+        device_embeddings, server_embeddings, forward_edge_features
+    )
 
     mask = agent._action_mask_for_graph_state(graph_state)
     masked_probabilities = agent._masked_action_probabilities(
@@ -237,14 +244,79 @@ def test_graph_gat_mappo_action_mask_can_be_disabled() -> None:
         use_action_mask=False,
     )
     graph_state = _make_graph_state()
-    device_embeddings = agent._encode_graph(graph_state)
-    probabilities = agent.actor(device_embeddings)
+    device_embeddings, server_embeddings = agent._encode_local_actor_nodes(
+        graph_state
+    )
+    forward_edge_features = agent._device_server_edge_features(
+        graph_state
+    )[:, :, 0, :]
+    probabilities = agent.actor(
+        device_embeddings, server_embeddings, forward_edge_features
+    )
 
     masked_probabilities = agent._masked_action_probabilities(
         probabilities, graph_state
     )
 
     assert torch.allclose(masked_probabilities, probabilities)
+
+
+def test_graph_gat_actor_is_equivariant_to_server_permutation() -> None:
+    """Swapping server inputs should swap only the corresponding actions."""
+    torch.manual_seed(45)
+    agent = GraphGATMAPPOAgent(
+        num_devices=2,
+        num_servers=2,
+        node_feature_dim=14,
+        edge_feature_dim=7,
+        embedding_dim=8,
+        use_action_mask=False,
+    )
+    graph_state = _make_graph_state()
+    device_features = agent._selected_node_features(
+        graph_state, graph_state.device_node_indices
+    )
+    server_features = agent._selected_node_features(
+        graph_state, graph_state.server_node_indices
+    )
+    edge_features = agent._device_server_edge_features(graph_state)
+    forward_edge_features = edge_features[:, :, 0, :]
+    backward_edge_features = edge_features[:, :, 1, :]
+
+    device_embeddings, server_embeddings = (
+        agent.encoder.forward_batched_local_nodes(
+            device_features,
+            server_features,
+            forward_edge_features,
+            backward_edge_features,
+        )
+    )
+    probabilities = agent.actor(
+        device_embeddings, server_embeddings, forward_edge_features
+    )
+
+    server_order = torch.tensor([1, 0])
+    permuted_device_embeddings, permuted_server_embeddings = (
+        agent.encoder.forward_batched_local_nodes(
+            device_features,
+            server_features[server_order],
+            forward_edge_features[:, server_order],
+            backward_edge_features[:, server_order],
+        )
+    )
+    permuted_probabilities = agent.actor(
+        permuted_device_embeddings,
+        permuted_server_embeddings,
+        forward_edge_features[:, server_order],
+    )
+    expected_probabilities = torch.cat(
+        [probabilities[:, :1], probabilities[:, 1:][:, server_order]],
+        dim=-1,
+    )
+
+    assert torch.allclose(
+        permuted_probabilities, expected_probabilities, atol=1e-6
+    )
 
 
 def test_graph_gat_topology_warmup_updates_encoder_parameters() -> None:
@@ -580,7 +652,7 @@ def test_graph_gat_hyperparameter_overrides_are_scoped_to_graph_variants() -> No
 
 
 def test_graph_gat_optimizer_supports_encoder_specific_learning_rate() -> None:
-    """Encoder and policy heads should use their configured PPO rates."""
+    """Encoder, actor, and critic should use their configured PPO rates."""
     agent = GraphGATMAPPOAgent(
         num_devices=2,
         num_servers=2,
@@ -588,13 +660,19 @@ def test_graph_gat_optimizer_supports_encoder_specific_learning_rate() -> None:
         edge_feature_dim=7,
         embedding_dim=8,
         lr=8e-5,
+        actor_lr=7e-5,
+        critic_lr=9e-5,
         encoder_lr=3e-5,
         entropy_coef=0.005,
         value_loss_coef=0.5,
         max_grad_norm=0.5,
     )
 
-    assert [group["lr"] for group in agent.optimizer.param_groups] == [3e-5, 8e-5]
+    assert [group["lr"] for group in agent.optimizer.param_groups] == [
+        3e-5,
+        7e-5,
+        9e-5,
+    ]
     assert agent.entropy_coef == 0.005
     assert agent.value_loss_coef == 0.5
     assert agent.max_grad_norm == 0.5
@@ -714,7 +792,9 @@ def test_graph_gat_mappo_batches_rollout_encoder_calls() -> None:
             done=step_index == transition_count - 1,
         )
     original_global_rollout = agent.encoder.forward_batched_global_rollout
-    original_local_rollout = agent.encoder.forward_batched_local_rollout
+    original_local_rollout = (
+        agent.encoder.forward_batched_local_rollout_nodes
+    )
     global_encode_call_count = 0
     local_batch_call_count = 0
 
@@ -729,7 +809,7 @@ def test_graph_gat_mappo_batches_rollout_encoder_calls() -> None:
         return original_local_rollout(*args, **kwargs)
 
     agent.encoder.forward_batched_global_rollout = counted_global_rollout
-    agent.encoder.forward_batched_local_rollout = counted_local_rollout
+    agent.encoder.forward_batched_local_rollout_nodes = counted_local_rollout
 
     agent.update_from_rollout(buffer)
 
