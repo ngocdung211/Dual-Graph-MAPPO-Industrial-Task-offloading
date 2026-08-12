@@ -37,6 +37,9 @@ PAPER_PARAMS: Dict[str, Dict[str, float]] = {
         "replay_buffer_capacity": 100000,
         "comparison_full_episodes": 500,
         "baseline_evaluation_episodes": 5,
+        "comparison_hyperparameters_dir": (
+            "configs/hyperparameters/unmasked_penalty_0_5"
+        ),
         "experiment_seed": 75,
         "diagnostic_interval_episodes": 250,
         "subslot_count": 200,

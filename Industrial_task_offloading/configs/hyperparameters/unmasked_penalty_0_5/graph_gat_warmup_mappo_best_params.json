@@ -1,0 +1,18 @@
+{
+  "model": "Graph-GAT Warmup MAPPO",
+  "study_name": "Graph-GAT Warmup MAPPO-medium_20d_6s-train75",
+  "trial": 20,
+  "value": 3.5975147629843485,
+  "params": {
+    "lr": 4.1506376563161457e-05,
+    "encoder_lr": 1.35756451403374e-05,
+    "clip_param": 0.12653872960569873,
+    "ppo_epochs": 8,
+    "entropy_coef": 0.0004036514712274432,
+    "value_loss_coef": 0.9265682071832749,
+    "max_grad_norm": 0.3,
+    "warmup_episodes": 20,
+    "warmup_updates_per_step": 4,
+    "warmup_lr": 0.0008806309581443235
+  }
+}

@@ -589,19 +589,20 @@ def test_graph_gat_mappo_is_registered_as_separate_comparison_model() -> None:
     configs = build_algorithm_configs()
 
     assert configs["Graph-GAT MAPPO"]["class"] is GraphGATMAPPOAgent
-    assert configs["Graph-GAT Mask MAPPO"]["class"] is GraphGATMAPPOAgent
-    assert configs["Graph-GAT Warmup Mask MAPPO"]["class"] is GraphGATMAPPOAgent
-    assert configs["Graph-GAT Warmup Mask MAPPO"]["kwargs"]["topology_warmup_episodes"] == 5
+    assert configs["Graph-GAT Warmup MAPPO"]["class"] is GraphGATMAPPOAgent
     assert (
-        configs["Graph-GAT Warmup Mask MAPPO"]["kwargs"][
+        configs["Graph-GAT Warmup MAPPO"]["kwargs"][
+            "topology_warmup_episodes"
+        ]
+        == 5
+    )
+    assert (
+        configs["Graph-GAT Warmup MAPPO"]["kwargs"][
             "topology_warmup_updates_per_step"
         ]
         == 10
     )
-    if "MAPPO" in configs:
-        assert configs["MAPPO"]["class"] is not GraphGATMAPPOAgent
-    if "Mask-MAPPO" in configs:
-        assert configs["Mask-MAPPO"]["class"] is not GraphGATMAPPOAgent
+    assert configs["MAPPO"]["class"] is not GraphGATMAPPOAgent
 
 
 def test_graph_gat_device_override_only_applies_to_graph_agents() -> None:
@@ -648,7 +649,8 @@ def test_graph_gat_hyperparameter_overrides_are_scoped_to_graph_variants() -> No
             assert kwargs["topology_warmup_updates_per_step"] == 2
             assert kwargs["topology_warmup_lr"] == 3e-4
         else:
-            assert "topology_warmup_episodes" not in kwargs
+            assert kwargs["topology_warmup_episodes"] == 0
+            assert kwargs["topology_warmup_updates_per_step"] == 0
 
 
 def test_graph_gat_optimizer_supports_encoder_specific_learning_rate() -> None:

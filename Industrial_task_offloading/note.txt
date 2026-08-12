@@ -1,3 +1,12 @@
-python run_comparision.py --topology-scenario paper_10d_3s --episodes 500 --baseline-episodes 5 --graph-gat-device cuda --note paper10_all_mappo_500ep_seed75
-python run_comparision.py --topology-scenario medium_20d_6s --episodes 500 --baseline-episodes 5 --graph-gat-device cuda --note medium20_all_mappo_500ep_seed75
-python run_comparision.py --topology-scenario large_30d_9s --episodes 500 --baseline-episodes 5 --graph-gat-device cuda --note large30_all_mappo_500ep_seed75
+# MacBook Air M1 (8 GB): run these commands sequentially.
+# Activate the project environment first: conda activate task_offloading
+# One-time W&B setup:
+# python -m pip install -r requirements-wandb.txt
+# wandb login
+set -e
+
+python run_comparision.py --topology-scenario paper_10d_3s --episodes 1000 --experiment-seed 175 --graph-gat-device cpu --hyperparameters-dir configs/hyperparameters/unmasked_penalty_0_5 --note penalty_0_5_best_paper_1000ep_seed175 --wandb-mode online --wandb-group penalty_0_5_best_1000ep_seed175 --algorithms "e-ATN-MADDPG" "MAPPO" "Graph-GAT MAPPO" "Graph-GAT Warmup MAPPO"
+
+python run_comparision.py --topology-scenario medium_20d_6s --episodes 1000 --experiment-seed 190 --graph-gat-device cpu --hyperparameters-dir configs/hyperparameters/unmasked_penalty_0_5 --note penalty_0_5_best_medium_1000ep_seed190 --wandb-mode online --wandb-group penalty_0_5_best_1000ep_seed175 --algorithms "e-ATN-MADDPG" "MAPPO" "Graph-GAT MAPPO" "Graph-GAT Warmup MAPPO"
+
+python run_comparision.py --topology-scenario large_30d_9s --episodes 1000 --experiment-seed 190 --graph-gat-device cpu --hyperparameters-dir configs/hyperparameters/unmasked_penalty_0_5 --note penalty_0_5_best_large_1000ep_seed190 --wandb-mode online --wandb-group penalty_0_5_best_1000ep_seed190 --algorithms "e-ATN-MADDPG" "MAPPO" "Graph-GAT MAPPO" "Graph-GAT Warmup MAPPO"

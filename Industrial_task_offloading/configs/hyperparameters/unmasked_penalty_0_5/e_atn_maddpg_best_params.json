@@ -1,0 +1,16 @@
+{
+  "model": "e-ATN-MADDPG",
+  "study_name": "e-ATN-MADDPG-medium_20d_6s-train75",
+  "trial": 11,
+  "value": 2.835436174279937,
+  "params": {
+    "actor_lr": 3.3550238077331906e-05,
+    "critic_lr": 0.0008531623968927075,
+    "gamma": 0.985198169873773,
+    "tau": 0.0026094064238109185,
+    "batch_size": 256,
+    "hidden_dim": 128,
+    "epsilon_final": 0.06535492285513136,
+    "exploration_fraction": 0.472497898388358
+  }
+}

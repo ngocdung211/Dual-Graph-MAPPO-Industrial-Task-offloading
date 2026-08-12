@@ -17,6 +17,7 @@ from run_comparision import (
     _should_print_diagnostics,
     _summarize_step_metrics,
     build_algorithm_configs,
+    load_tuned_hyperparameters,
 )
 from utils.comparison_outputs import (
     _save_model_checkpoint,
@@ -150,10 +151,6 @@ def test_learning_algorithm_kwargs_use_config_values() -> None:
         provisional["mappo_ppo_epochs"]
     )
     assert configs["MAPPO"]["kwargs"]["use_action_mask"] is False
-    assert (
-        configs["Mask-MAPPO"]["kwargs"]["use_action_mask"]
-        == provisional["mappo_use_action_mask"]
-    )
     assert configs["Graph-GAT MAPPO"]["kwargs"]["gamma"] == provisional["gamma"]
     assert configs["Graph-GAT MAPPO"]["kwargs"]["hidden_dim"] == int(
         provisional["graph_gat_hidden_dim"]
@@ -162,10 +159,45 @@ def test_learning_algorithm_kwargs_use_config_values() -> None:
         provisional["graph_gat_embedding_dim"]
     )
     assert configs["Graph-GAT MAPPO"]["kwargs"]["use_action_mask"] is False
-    assert (
-        configs["Graph-GAT Mask MAPPO"]["kwargs"]["use_action_mask"]
-        == provisional["graph_gat_use_action_mask"]
+
+
+def test_locked_profile_transfers_best_params_to_comparison_models() -> None:
+    """The locked Optuna profile should configure all four unmasked models."""
+    profile_dir = PAPER_PARAMS["provisional_table2_needed"][
+        "comparison_hyperparameters_dir"
+    ]
+    tuned_params, metadata = load_tuned_hyperparameters(profile_dir)
+
+    configs = build_algorithm_configs(
+        graph_gat_device="cpu",
+        tuned_hyperparameters=tuned_params,
     )
+
+    assert metadata["effective_failed_offload_penalty"] == pytest.approx(-0.5)
+    assert configs["e-ATN-MADDPG"]["batch_size"] == 256
+    assert configs["MAPPO"]["kwargs"]["actor_lr"] == pytest.approx(
+        0.0004647005894999619
+    )
+    assert configs["Graph-GAT MAPPO"]["kwargs"][
+        "topology_warmup_episodes"
+    ] == 0
+    assert configs["Graph-GAT Warmup MAPPO"]["kwargs"][
+        "topology_warmup_episodes"
+    ] == 20
+    assert configs["Graph-GAT Warmup MAPPO"]["kwargs"][
+        "topology_warmup_updates_per_step"
+    ] == 4
+
+
+def test_optuna_output_directory_transfers_without_manual_profile() -> None:
+    """A normal Optuna output directory should be directly reusable."""
+    tuned_params, metadata = load_tuned_hyperparameters(
+        "results/optuna/unmasked_pairwise_penalty_0_25_5trial"
+    )
+
+    assert metadata["profile_generated_at_runtime"] is True
+    assert tuned_params["e-ATN-MADDPG"]["batch_size"] == 256
+    assert tuned_params["Graph-GAT Warmup MAPPO"]["warmup_episodes"] == 20
 
 
 def test_optuna_default_trials_build_requested_unmasked_models() -> None:

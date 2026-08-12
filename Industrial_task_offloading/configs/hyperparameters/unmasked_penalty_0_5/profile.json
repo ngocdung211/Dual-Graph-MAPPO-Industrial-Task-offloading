@@ -1,0 +1,17 @@
+{
+  "name": "unmasked_penalty_0_5_best",
+  "use_action_mask": false,
+  "lambda5": 0.5,
+  "p_out_value": -1.0,
+  "effective_failed_offload_penalty": -0.5,
+  "source_topology": "medium_20d_6s",
+  "training_episodes": 500,
+  "training_seed": 75,
+  "source_directory": "results/optuna/unmasked_pairwise_penalty_0_25_5trial",
+  "source_directory_note": "Legacy directory name; the run used effective penalty -0.5.",
+  "selected_trials": {
+    "e-ATN-MADDPG": 11,
+    "MAPPO": 23,
+    "Graph-GAT Warmup MAPPO": 20
+  }
+}

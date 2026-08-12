@@ -1,0 +1,17 @@
+{
+  "model": "MAPPO",
+  "study_name": "MAPPO-medium_20d_6s-train75",
+  "trial": 23,
+  "value": 3.333569908865178,
+  "params": {
+    "actor_lr": 0.0004647005894999619,
+    "critic_lr": 0.0002416794722983358,
+    "gamma": 0.9697518756363168,
+    "clip_param": 0.23119490323151426,
+    "ppo_epochs": 8,
+    "entropy_coef": 0.016828875587276814,
+    "value_loss_coef": 0.3289143609525009,
+    "max_grad_norm": null,
+    "hidden_dim": 128
+  }
+}

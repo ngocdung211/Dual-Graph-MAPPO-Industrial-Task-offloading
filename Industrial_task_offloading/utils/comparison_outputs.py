@@ -29,6 +29,17 @@ def flatten_topology_metrics(topology_metrics: Dict[str, object]) -> Dict[str, o
     physical_compute = topology_metrics.get("physical_compute")
     if physical_compute is not None:
         flattened.update(physical_compute)
+    hyperparameter_profile = topology_metrics.get("hyperparameter_profile")
+    if hyperparameter_profile is not None:
+        flattened.update(
+            {
+                "hyperparameter_profile": hyperparameter_profile["name"],
+                "hyperparameter_profile_path": hyperparameter_profile["path"],
+                "hyperparameter_effective_failed_offload_penalty": (
+                    hyperparameter_profile["effective_failed_offload_penalty"]
+                ),
+            }
+        )
     return flattened
 
 

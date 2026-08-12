@@ -5,6 +5,8 @@ generates plots and JSON summaries for reward, delay, and energy.
 """
 
 import argparse
+import json
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -69,6 +71,13 @@ FIXED_BASELINE_ALGORITHMS = frozenset(
     }
 )
 
+TUNED_MODEL_FILES = {
+    "e-ATN-MADDPG": "e_atn_maddpg_best_params.json",
+    "MAPPO": "mappo_best_params.json",
+    "Graph-GAT Warmup MAPPO": "graph_gat_warmup_mappo_best_params.json",
+}
+
+
 def set_seed(seed: int = 42) -> None:
     """Set random seeds for reproducible runs.
 
@@ -97,6 +106,12 @@ def parse_args() -> argparse.Namespace:
         help="Override comparison_full_episodes for smoke or short runs.",
     )
     parser.add_argument(
+        "--experiment-seed",
+        type=int,
+        default=None,
+        help="Override the configured experiment seed.",
+    )
+    parser.add_argument(
         "--baseline-episodes",
         type=int,
         default=None,
@@ -111,6 +126,14 @@ def parse_args() -> argparse.Namespace:
         "--graph-gat-device",
         default=None,
         help="Override Graph-GAT device: auto, cpu, cuda, or cuda:<index>.",
+    )
+    parser.add_argument(
+        "--hyperparameters-dir",
+        default=str(provisional["comparison_hyperparameters_dir"]),
+        help=(
+            "Directory containing the three Optuna *_best_params.json files. "
+            "A profile.json locks environment provenance when present."
+        ),
     )
     parser.add_argument(
         "--graph-gat-lr", type=float, default=None, help="Actor/critic learning rate."
@@ -282,9 +305,88 @@ def summarize_physical_compute(
     }
 
 
+def load_tuned_hyperparameters(
+    input_dir: str,
+) -> Tuple[Dict[str, Dict[str, object]], Dict[str, object]]:
+    """Load a locked Optuna profile and validate its environment settings.
+
+    Args:
+        input_dir: Directory containing best-params JSON and an optional
+            ``profile.json`` provenance lock.
+
+    Returns:
+        Tuple of model parameter mappings and profile metadata.
+
+    Raises:
+        ValueError: If the profile does not match the current environment.
+    """
+    profile_dir = Path(input_dir)
+    provisional = PAPER_PARAMS["provisional_table2_needed"]
+    profile_path = profile_dir / "profile.json"
+    if profile_path.exists():
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    else:
+        profile = {
+            "name": profile_dir.name,
+            "use_action_mask": False,
+            "lambda5": float(provisional["lambda5"]),
+            "p_out_value": float(provisional["p_out_value"]),
+            "effective_failed_offload_penalty": (
+                float(provisional["lambda5"])
+                * float(provisional["p_out_value"])
+            ),
+            "profile_generated_at_runtime": True,
+        }
+    for setting_name in ("lambda5", "p_out_value"):
+        current_value = float(provisional[setting_name])
+        expected_value = float(profile[setting_name])
+        if not np.isclose(current_value, expected_value):
+            raise ValueError(
+                f"hyperparameter profile expects {setting_name}="
+                f"{expected_value}, but the environment uses {current_value}"
+            )
+    current_penalty = float(provisional["lambda5"]) * float(
+        provisional["p_out_value"]
+    )
+    expected_penalty = float(profile["effective_failed_offload_penalty"])
+    if not np.isclose(current_penalty, expected_penalty):
+        raise ValueError(
+            "hyperparameter profile expects failed-offload penalty "
+            f"{expected_penalty}, but the environment uses {current_penalty}"
+        )
+    if bool(profile.get("use_action_mask", False)):
+        raise ValueError("comparison currently requires an unmasked profile")
+
+    model_params = {}
+    selected_trials = profile.get("selected_trials", {})
+    for model_name, filename in TUNED_MODEL_FILES.items():
+        artifact_path = profile_dir / filename
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        if payload.get("model") != model_name:
+            raise ValueError(
+                f"expected {model_name} in {artifact_path}, "
+                f"found {payload.get('model')!r}"
+            )
+        expected_trial = selected_trials.get(model_name)
+        if expected_trial is not None and payload.get("trial") != expected_trial:
+            raise ValueError(
+                f"expected trial {expected_trial} for {model_name}, "
+                f"found {payload.get('trial')!r}"
+            )
+        params = payload.get("params")
+        if not isinstance(params, dict):
+            raise ValueError(f"missing params object in {artifact_path}")
+        model_params[model_name] = params
+
+    metadata = dict(profile)
+    metadata["path"] = str(profile_path if profile_path.exists() else profile_dir)
+    return model_params, metadata
+
+
 def build_algorithm_configs(
     graph_gat_device: Optional[str] = None,
     *,
+    tuned_hyperparameters: Optional[Dict[str, Dict[str, object]]] = None,
     graph_gat_lr: Optional[float] = None,
     graph_gat_encoder_lr: Optional[float] = None,
     graph_gat_hidden_dim: Optional[int] = None,
@@ -303,6 +405,8 @@ def build_algorithm_configs(
     Args:
         graph_gat_device: Optional device override applied only to Graph-GAT
             MAPPO variants.
+        tuned_hyperparameters: Optional Optuna parameter mappings keyed by
+            tuned model name.
         graph_gat_lr: Optional actor/critic learning-rate override.
         graph_gat_encoder_lr: Optional encoder learning-rate override.
         graph_gat_hidden_dim: Optional hidden-width override.
@@ -329,146 +433,165 @@ def build_algorithm_configs(
         "Edge Only": {"class": EdgeOnlyAgent, "kwargs": {}},
         "Feature Extraction Edge": {"class": FeatureExtractionEdgeAgent, "kwargs": {}},
         "Random Offloading": {"class": RandomOffloadingAgent, "kwargs": {}},
-        # "e-ATN-MADDPG": {
-        #     "class": EpsilonATNMADDPGAgent,
-        #     "batch_size": int(provisional["batch_size"]),
-        #     "kwargs": {
-        #         "use_attention": True,
-        #         "use_epsilon_greedy": True,
-        #         "actor_lr": provisional["maddpg_actor_lr"],
-        #         "critic_lr": provisional["maddpg_critic_lr"],
-        #         "gamma": provisional["gamma"],
-        #         "tau": provisional["tau_soft_update"],
-        #         "hidden_dim": int(provisional["maddpg_hidden_dim"]),
-        #         "epsilon_init": provisional["epsilon_init"],
-        #         "epsilon_min": provisional["epsilon_min"],
-        #         "epsilon_final": provisional["maddpg_epsilon_final"],
-        #         "exploration_fraction": provisional[
-        #             "maddpg_exploration_fraction"
-        #         ],
-        #     },
-        # },
-        # "MADDPG": {
-        #     "class": EpsilonATNMADDPGAgent,
-        #     "kwargs": {
-        #         "use_attention": False,
-        #         "use_epsilon_greedy": False,
-        #         "lr": confirmed["rl_lr"],
-        #         "epsilon_init": provisional["epsilon_init"],
-        #         "epsilon_min": provisional["epsilon_min"],
-        #         "decay": provisional["epsilon_decay"],
-        #     },
-        # },
-        # "MAAC": {"class": MAACAgent, "kwargs": {"lr": confirmed["rl_lr"]}},
-        # "MAPPO": {
-        #     "class": MAPPOAgent,
-        #     "kwargs": {
-        #         "lr": confirmed["rl_lr"],
-        #         "gamma": provisional["gamma"],
-        #         "clip_param": provisional["mappo_clip_param"],
-        #         "ppo_epochs": int(provisional["mappo_ppo_epochs"]),
-        #         "entropy_coef": provisional["mappo_entropy_coef"],
-        #         "value_loss_coef": provisional["mappo_value_loss_coef"],
-        #         "max_grad_norm": provisional["mappo_max_grad_norm"],
-        #         "hidden_dim": int(provisional["mappo_hidden_dim"]),
-        #         "use_action_mask": False,
-        #     },
-        # },
-        # "Mask-MAPPO": {
-        #     "class": MAPPOAgent,
-        #     "kwargs": {
-        #         "lr": confirmed["rl_lr"],
-        #         "gamma": provisional["gamma"],
-        #         "clip_param": provisional["mappo_clip_param"],
-        #         "ppo_epochs": int(provisional["mappo_ppo_epochs"]),
-        #         "entropy_coef": provisional["mappo_entropy_coef"],
-        #         "value_loss_coef": provisional["mappo_value_loss_coef"],
-        #         "max_grad_norm": provisional["mappo_max_grad_norm"],
-        #         "hidden_dim": int(provisional["mappo_hidden_dim"]),
-        #         "use_action_mask": provisional["mappo_use_action_mask"],
-        #     },
-        # },
-        # "Graph-GAT MAPPO": {
-        #     "class": GraphGATMAPPOAgent,
-        #     "kwargs": {
-        #         "lr": confirmed["rl_lr"],
-        #         "gamma": provisional["gamma"],
-        #         "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
-        #         "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
-        #         "clip_param": provisional["graph_gat_clip_param"],
-        #         "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
-        #         "entropy_coef": provisional["graph_gat_entropy_coef"],
-        #         "value_loss_coef": provisional["graph_gat_value_loss_coef"],
-        #         "max_grad_norm": provisional["graph_gat_max_grad_norm"],
-        #         "use_action_mask": False,
-        #         "device": selected_graph_gat_device,
-        #     },
-        # },
-        # "Graph-GAT Warmup MAPPO": {
-        #     "class": GraphGATMAPPOAgent,
-        #     "kwargs": {
-        #         "lr": confirmed["rl_lr"],
-        #         "gamma": provisional["gamma"],
-        #         "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
-        #         "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
-        #         "clip_param": provisional["graph_gat_clip_param"],
-        #         "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
-        #         "entropy_coef": provisional["graph_gat_entropy_coef"],
-        #         "value_loss_coef": provisional["graph_gat_value_loss_coef"],
-        #         "max_grad_norm": provisional["graph_gat_max_grad_norm"],
-        #         "use_action_mask": False,
-        #         "topology_warmup_episodes": int(
-        #             provisional["graph_gat_topology_warmup_episodes"]
-        #         ),
-        #         "topology_warmup_updates_per_step": int(
-        #             provisional["graph_gat_topology_warmup_updates_per_step"]
-        #         ),
-        #         "topology_warmup_lr": provisional["graph_gat_topology_warmup_lr"],
-        #         "device": selected_graph_gat_device,
-        #     },
-        # },
-        # "Graph-GAT Mask MAPPO": {
-        #     "class": GraphGATMAPPOAgent,
-        #     "kwargs": {
-        #         "lr": confirmed["rl_lr"],
-        #         "gamma": provisional["gamma"],
-        #         "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
-        #         "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
-        #         "clip_param": provisional["graph_gat_clip_param"],
-        #         "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
-        #         "entropy_coef": provisional["graph_gat_entropy_coef"],
-        #         "value_loss_coef": provisional["graph_gat_value_loss_coef"],
-        #         "max_grad_norm": provisional["graph_gat_max_grad_norm"],
-        #         "use_action_mask": provisional["graph_gat_use_action_mask"],
-        #         "device": selected_graph_gat_device,
-        #     },
-        # },
-    #     "Graph-GAT Warmup Mask MAPPO": {
-    #         "class": GraphGATMAPPOAgent,
-    #         "kwargs": {
-    #             "lr": confirmed["rl_lr"],
-    #             "gamma": provisional["gamma"],
-    #             "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
-    #             "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
-    #             "clip_param": provisional["graph_gat_clip_param"],
-    #             "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
-    #             "entropy_coef": provisional["graph_gat_entropy_coef"],
-    #             "value_loss_coef": provisional["graph_gat_value_loss_coef"],
-    #             "max_grad_norm": provisional["graph_gat_max_grad_norm"],
-    #             "use_action_mask": provisional["graph_gat_use_action_mask"],
-    #             "topology_warmup_episodes": int(
-    #                 provisional["graph_gat_topology_warmup_episodes"]
-    #             ),
-    #             "topology_warmup_updates_per_step": int(
-    #                 provisional["graph_gat_topology_warmup_updates_per_step"]
-    #             ),
-    #             "topology_warmup_lr": provisional["graph_gat_topology_warmup_lr"],
-    #             "device": selected_graph_gat_device,
-    #         },
-    #     },
+        "e-ATN-MADDPG": {
+            "class": EpsilonATNMADDPGAgent,
+            "batch_size": int(provisional["batch_size"]),
+            "kwargs": {
+                "use_attention": True,
+                "use_epsilon_greedy": True,
+                "actor_lr": provisional["maddpg_actor_lr"],
+                "critic_lr": provisional["maddpg_critic_lr"],
+                "gamma": provisional["gamma"],
+                "tau": provisional["tau_soft_update"],
+                "hidden_dim": int(provisional["maddpg_hidden_dim"]),
+                "epsilon_init": provisional["epsilon_init"],
+                "epsilon_min": provisional["epsilon_min"],
+                "epsilon_final": provisional["maddpg_epsilon_final"],
+                "exploration_fraction": provisional[
+                    "maddpg_exploration_fraction"
+                ],
+            },
+        },
+        "MAPPO": {
+            "class": MAPPOAgent,
+            "kwargs": {
+                "actor_lr": confirmed["rl_lr"],
+                "critic_lr": confirmed["rl_lr"],
+                "gamma": provisional["gamma"],
+                "clip_param": provisional["mappo_clip_param"],
+                "ppo_epochs": int(provisional["mappo_ppo_epochs"]),
+                "entropy_coef": provisional["mappo_entropy_coef"],
+                "value_loss_coef": provisional["mappo_value_loss_coef"],
+                "max_grad_norm": provisional["mappo_max_grad_norm"],
+                "hidden_dim": int(provisional["mappo_hidden_dim"]),
+                "use_action_mask": False,
+            },
+        },
+        "Graph-GAT MAPPO": {
+            "class": GraphGATMAPPOAgent,
+            "kwargs": {
+                "lr": confirmed["rl_lr"],
+                "encoder_lr": confirmed["rl_lr"],
+                "gamma": provisional["gamma"],
+                "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
+                "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
+                "clip_param": provisional["graph_gat_clip_param"],
+                "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
+                "entropy_coef": provisional["graph_gat_entropy_coef"],
+                "value_loss_coef": provisional["graph_gat_value_loss_coef"],
+                "max_grad_norm": provisional["graph_gat_max_grad_norm"],
+                "use_action_mask": False,
+                "topology_warmup_episodes": 0,
+                "topology_warmup_updates_per_step": 0,
+                "device": selected_graph_gat_device,
+            },
+        },
+        "Graph-GAT Warmup MAPPO": {
+            "class": GraphGATMAPPOAgent,
+            "kwargs": {
+                "lr": confirmed["rl_lr"],
+                "encoder_lr": confirmed["rl_lr"],
+                "gamma": provisional["gamma"],
+                "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
+                "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
+                "clip_param": provisional["graph_gat_clip_param"],
+                "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
+                "entropy_coef": provisional["graph_gat_entropy_coef"],
+                "value_loss_coef": provisional["graph_gat_value_loss_coef"],
+                "max_grad_norm": provisional["graph_gat_max_grad_norm"],
+                "use_action_mask": False,
+                "topology_warmup_episodes": int(
+                    provisional["graph_gat_topology_warmup_episodes"]
+                ),
+                "topology_warmup_updates_per_step": int(
+                    provisional["graph_gat_topology_warmup_updates_per_step"]
+                ),
+                "topology_warmup_lr": provisional["graph_gat_topology_warmup_lr"],
+                "device": selected_graph_gat_device,
+            },
+        },
     }
+    if tuned_hyperparameters is not None:
+        maddpg_params = tuned_hyperparameters["e-ATN-MADDPG"]
+        epsilon_final = float(maddpg_params["epsilon_final"])
+        configs["e-ATN-MADDPG"] = {
+            "class": EpsilonATNMADDPGAgent,
+            "batch_size": int(maddpg_params["batch_size"]),
+            "kwargs": {
+                "use_attention": True,
+                "use_epsilon_greedy": True,
+                "actor_lr": float(maddpg_params["actor_lr"]),
+                "critic_lr": float(maddpg_params["critic_lr"]),
+                "gamma": float(maddpg_params["gamma"]),
+                "tau": float(maddpg_params["tau"]),
+                "hidden_dim": int(maddpg_params["hidden_dim"]),
+                "epsilon_init": 1.0,
+                "epsilon_min": epsilon_final,
+                "epsilon_final": epsilon_final,
+                "exploration_fraction": float(
+                    maddpg_params["exploration_fraction"]
+                ),
+            },
+        }
+
+        mappo_params = tuned_hyperparameters["MAPPO"]
+        configs["MAPPO"]["kwargs"].update(
+            {
+                "actor_lr": float(mappo_params["actor_lr"]),
+                "critic_lr": float(mappo_params["critic_lr"]),
+                "gamma": float(mappo_params["gamma"]),
+                "clip_param": float(mappo_params["clip_param"]),
+                "ppo_epochs": int(mappo_params["ppo_epochs"]),
+                "entropy_coef": float(mappo_params["entropy_coef"]),
+                "value_loss_coef": float(mappo_params["value_loss_coef"]),
+                "max_grad_norm": mappo_params["max_grad_norm"],
+                "hidden_dim": int(mappo_params["hidden_dim"]),
+            }
+        )
+
+        graph_params = tuned_hyperparameters["Graph-GAT Warmup MAPPO"]
+        shared_lr = graph_params.get("lr")
+        actor_lr = graph_params.get("actor_lr", shared_lr)
+        critic_lr = graph_params.get("critic_lr", shared_lr)
+        if actor_lr is None or critic_lr is None:
+            raise ValueError(
+                "Graph-GAT params require lr or both actor_lr and critic_lr"
+            )
+        graph_kwargs = {
+            "lr": float(actor_lr),
+            "actor_lr": float(actor_lr),
+            "critic_lr": float(critic_lr),
+            "encoder_lr": float(graph_params["encoder_lr"]),
+            "gamma": float(graph_params.get("gamma", provisional["gamma"])),
+            "hidden_dim": int(
+                graph_params.get("hidden_dim", provisional["graph_gat_hidden_dim"])
+            ),
+            "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
+            "clip_param": float(graph_params["clip_param"]),
+            "ppo_epochs": int(graph_params["ppo_epochs"]),
+            "entropy_coef": float(graph_params["entropy_coef"]),
+            "value_loss_coef": float(graph_params["value_loss_coef"]),
+            "max_grad_norm": graph_params["max_grad_norm"],
+            "use_action_mask": False,
+            "topology_warmup_lr": float(graph_params["warmup_lr"]),
+            "device": selected_graph_gat_device,
+        }
+        configs["Graph-GAT MAPPO"]["kwargs"] = {
+            **graph_kwargs,
+            "topology_warmup_episodes": 0,
+            "topology_warmup_updates_per_step": 0,
+        }
+        configs["Graph-GAT Warmup MAPPO"]["kwargs"] = {
+            **graph_kwargs,
+            "topology_warmup_episodes": int(graph_params["warmup_episodes"]),
+            "topology_warmup_updates_per_step": int(
+                graph_params["warmup_updates_per_step"]
+            ),
+        }
     graph_overrides = {
         "lr": graph_gat_lr,
+        "actor_lr": graph_gat_lr,
+        "critic_lr": graph_gat_lr,
         "encoder_lr": graph_gat_encoder_lr,
         "hidden_dim": graph_gat_hidden_dim,
         "embedding_dim": graph_gat_embedding_dim,
@@ -1827,7 +1950,11 @@ if __name__ == "__main__":
     args = parse_args()
     confirmed = PAPER_PARAMS["confirmed"]
     provisional = PAPER_PARAMS["provisional_table2_needed"]
-    experiment_seed = int(provisional["experiment_seed"])
+    experiment_seed = (
+        int(args.experiment_seed)
+        if args.experiment_seed is not None
+        else int(provisional["experiment_seed"])
+    )
     set_seed(experiment_seed)
     BANDWIDTH, NOISE_POWER = confirmed["bandwidth_hz"], confirmed["noise_power_dbm"]
     topology_scenario = get_topology_scenario(args.topology_scenario)
@@ -1901,9 +2028,18 @@ if __name__ == "__main__":
     )
 
     # 2. Define Algorithms to Compare
+    tuned_hyperparameters, hyperparameter_profile = load_tuned_hyperparameters(
+        args.hyperparameters_dir
+    )
+    topology_metrics["hyperparameter_profile"] = hyperparameter_profile
+    print(
+        "Hyperparameter profile: "
+        f"{hyperparameter_profile['name']} ({hyperparameter_profile['path']})"
+    )
     algorithms = select_algorithm_configs(
         build_algorithm_configs(
             args.graph_gat_device,
+            tuned_hyperparameters=tuned_hyperparameters,
             graph_gat_lr=args.graph_gat_lr,
             graph_gat_encoder_lr=args.graph_gat_encoder_lr,
             graph_gat_hidden_dim=args.graph_gat_hidden_dim,
