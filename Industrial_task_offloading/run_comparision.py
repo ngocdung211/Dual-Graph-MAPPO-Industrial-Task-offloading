@@ -106,12 +106,6 @@ def parse_args() -> argparse.Namespace:
         help="Override comparison_full_episodes for smoke or short runs.",
     )
     parser.add_argument(
-        "--experiment-seed",
-        type=int,
-        default=None,
-        help="Override the configured experiment seed.",
-    )
-    parser.add_argument(
         "--baseline-episodes",
         type=int,
         default=None,
@@ -1950,11 +1944,7 @@ if __name__ == "__main__":
     args = parse_args()
     confirmed = PAPER_PARAMS["confirmed"]
     provisional = PAPER_PARAMS["provisional_table2_needed"]
-    experiment_seed = (
-        int(args.experiment_seed)
-        if args.experiment_seed is not None
-        else int(provisional["experiment_seed"])
-    )
+    experiment_seed = int(provisional["experiment_seed"])
     set_seed(experiment_seed)
     BANDWIDTH, NOISE_POWER = confirmed["bandwidth_hz"], confirmed["noise_power_dbm"]
     topology_scenario = get_topology_scenario(args.topology_scenario)
