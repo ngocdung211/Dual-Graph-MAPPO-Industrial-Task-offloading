@@ -89,25 +89,20 @@ def compute_scenario_metrics(scenario: TopologyScenario) -> Dict[str, object]:
 
 
 def plot_scenario(scenario: TopologyScenario, output_path: str) -> None:
-    """Plot one topology scenario to a PNG file."""
+    """Plot one paper-ready topology scenario to a PNG file."""
     server_locations = np.asarray(scenario.server_locations, dtype=float)
     start_points = _device_start_points(scenario)
-    metrics = compute_scenario_metrics(scenario)["route_samples"]
 
-    fig, ax = plt.subplots(figsize=(8, 8), dpi=180)
+    fig, ax = plt.subplots(figsize=(7, 7), dpi=300)
     ax.set_xlim(WORLD_MIN, WORLD_MAX)
     ax.set_ylim(WORLD_MIN, WORLD_MAX)
     ax.set_aspect("equal", adjustable="box")
-    ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.35)
-    ax.set_title(
-        (
-            f"{scenario.name}: {scenario.device_count} devices / "
-            f"{len(scenario.server_locations)} servers"
-        ),
-        fontsize=12,
-    )
-    ax.set_xlabel("x position (m)")
-    ax.set_ylabel("y position (m)")
+    coordinate_ticks = np.arange(WORLD_MIN, WORLD_MAX + 1.0, 20.0)
+    ax.set_xticks(coordinate_ticks)
+    ax.set_yticks(coordinate_ticks)
+    ax.tick_params(axis="both", direction="out", labelsize=9, length=3.5, width=0.8)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.8)
 
     route_color = "#34495e"
     for route_index, route in enumerate(scenario.route_rectangles):
@@ -119,17 +114,6 @@ def plot_scenario(scenario: TopologyScenario, output_path: str) -> None:
             linewidth=1.0,
             alpha=0.55,
         )
-        route_center = np.mean(route_array[:-1], axis=0)
-        ax.text(
-            route_center[0],
-            route_center[1],
-            f"R{route_index + 1}",
-            fontsize=7,
-            color=route_color,
-            ha="center",
-            va="center",
-            alpha=0.75,
-        )
         route_points = np.asarray(route, dtype=float)
         first_device_label = f"D{route_index * 2 + 1}"
         second_device_label = f"D{route_index * 2 + 2}"
@@ -140,14 +124,12 @@ def plot_scenario(scenario: TopologyScenario, output_path: str) -> None:
             ax, route_points[2], route_points[3], second_device_label
         )
 
-    colors = plt.cm.tab10(np.linspace(0.0, 1.0, len(server_locations)))
-    for server_index, (server_location, color) in enumerate(
-        zip(server_locations, colors), start=1
-    ):
+    server_color = "#2878B5"
+    for server_index, server_location in enumerate(server_locations, start=1):
         circle = plt.Circle(
             server_location,
             scenario.coverage_radius,
-            color=color,
+            color=server_color,
             alpha=0.16,
             linewidth=1.0,
             fill=True,
@@ -155,7 +137,7 @@ def plot_scenario(scenario: TopologyScenario, output_path: str) -> None:
         outline = plt.Circle(
             server_location,
             scenario.coverage_radius,
-            color=color,
+            color=server_color,
             alpha=0.85,
             linewidth=1.1,
             fill=False,
@@ -167,7 +149,7 @@ def plot_scenario(scenario: TopologyScenario, output_path: str) -> None:
             server_location[1],
             marker="s",
             s=70,
-            color=color,
+            color=server_color,
             edgecolors="black",
             linewidths=0.7,
             zorder=4,
@@ -193,37 +175,10 @@ def plot_scenario(scenario: TopologyScenario, output_path: str) -> None:
         linewidths=0.5,
         zorder=4,
     )
-    for device_index, point in enumerate(start_points, start=1):
-        ax.text(
-            point[0] + 1.0,
-            point[1] + 1.0,
-            f"D{device_index}",
-            fontsize=6,
-            ha="left",
-            va="bottom",
-            zorder=5,
-        )
-
-    metric_text = (
-        f"route avg links: {metrics['avg_feasible_servers']:.2f}\n"
-        f"density: {metrics['density']:.2f}\n"
-        f"zero-link: {metrics['zero_link_ratio']:.2f}\n"
-        f"multi-link: {metrics['multi_link_ratio']:.2f}\n"
-        "orange arrow: initial direction"
-    )
-    ax.text(
-        2.0,
-        98.0,
-        metric_text,
-        fontsize=8,
-        va="top",
-        ha="left",
-        bbox={"facecolor": "white", "edgecolor": "#999999", "alpha": 0.88},
-    )
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    fig.tight_layout()
-    fig.savefig(output_path)
+    fig.tight_layout(pad=0.35)
+    fig.savefig(output_path, bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
 
 

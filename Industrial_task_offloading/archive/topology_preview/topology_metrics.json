@@ -39,8 +39,8 @@
       "device_server_ratio": 3.3333333333333335
     }
   },
-  "large_30d_10s": {
-    "name": "large_30d_10s",
+  "large_30d_9s": {
+    "name": "large_30d_9s",
     "num_devices": 30,
     "num_servers": 9,
     "coverage_radius_m": 12.0,

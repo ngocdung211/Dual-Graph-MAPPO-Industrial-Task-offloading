@@ -37,10 +37,10 @@ MODEL_STYLES = {
     "Graph-GAT Warmup MAPPO": {"color": "#E45756", "linestyle": "-"},
 }
 MODEL_LABELS = {
-    "e-ATN-MADDPG": "e-ATN-MADDPG",
+    "e-ATN-MADDPG": "e-ATN-MADDPG [1]",
     "MAPPO": "MAPPO",
     "Graph-GAT MAPPO": "Dual-GAT MAPPO w/o warmup",
-    "Graph-GAT Warmup MAPPO": "Dual-GAT MAPPO",
+    "Graph-GAT Warmup MAPPO": "Dual-GAT MAPPO (ours)",
 }
 
 
