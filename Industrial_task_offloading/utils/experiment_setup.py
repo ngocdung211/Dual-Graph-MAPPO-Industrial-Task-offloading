@@ -14,6 +14,7 @@ from utils.graph_utils import extract_task_graph_inputs
 
 
 DEFAULT_DAG_EDGES = [(1, 2), (1, 3), (2, 4), (3, 4), (4, 5)]
+TASK_PRIORITY_FEATURE_DIM = 6
 
 
 def build_task_priority_model(
@@ -45,7 +46,10 @@ def get_priority_checkpoint_path(model_name: str) -> str:
     normalized_name = model_name.lower()
     if normalized_name not in {"gcn", "gat"}:
         raise ValueError("priority model must be one of: gcn, gat")
-    return f"models/checkpoints/{normalized_name}_priority.pt"
+    return (
+        f"models/checkpoints/{normalized_name}_priority_"
+        "features6_upward_rank.pt"
+    )
 
 
 def build_task_dag(
@@ -132,9 +136,55 @@ def build_priorities(
         features, adjacency = extract_task_graph_inputs(task_dag)
         with torch.no_grad():
             scores = priority_model(features, adjacency)
-        sorted_indices = torch.argsort(scores.squeeze(), descending=True).tolist()
-        priorities[device_id] = [idx + 1 for idx in sorted_indices]
+        priorities[device_id] = _topological_priority_order(task_dag, scores)
     return priorities
+
+
+def _topological_priority_order(
+    task_dag: TaskDAG, scores: torch.Tensor
+) -> List[int]:
+    """Select the highest-scoring ready subtask until the DAG is exhausted."""
+    indegree = {subtask_id: 0 for subtask_id in task_dag.subtasks}
+    successors = {subtask_id: [] for subtask_id in task_dag.subtasks}
+    for predecessor_id, successor_id in task_dag.edges:
+        indegree[successor_id] += 1
+        successors[predecessor_id].append(successor_id)
+
+    score_by_id = {
+        subtask_id: float(scores[subtask_id - 1].item())
+        for subtask_id in task_dag.subtasks
+    }
+    ready = [
+        subtask_id
+        for subtask_id, degree in indegree.items()
+        if degree == 0
+    ]
+    priority_order: List[int] = []
+    while ready:
+        selected_id = max(
+            ready,
+            key=lambda subtask_id: (score_by_id[subtask_id], -subtask_id),
+        )
+        ready.remove(selected_id)
+        priority_order.append(selected_id)
+        for successor_id in successors[selected_id]:
+            indegree[successor_id] -= 1
+            if indegree[successor_id] == 0:
+                ready.append(successor_id)
+
+    if len(priority_order) != len(task_dag.subtasks):
+        raise ValueError("task DAG must be acyclic")
+    return priority_order
+
+
+def broadcast_priority_order(
+    device_ids: List[int], priority_order: List[int]
+) -> Dict[int, List[int]]:
+    """Return independent copies of one fixed order for all devices."""
+    return {
+        device_id: list(priority_order)
+        for device_id in device_ids
+    }
 
 
 def make_priority_dag_sampler(

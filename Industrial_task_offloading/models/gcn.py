@@ -112,6 +112,6 @@ class TaskPriorityGCN(nn.Module):
 
 # --- Training Setup Example ---
 # If you are testing this isolated from the rest of the code:
-# model = TaskPriorityGCN(num_features=3, hidden_dim=32)
+# model = TaskPriorityGCN(num_features=6, hidden_dim=32)
 # optimizer = optim.Adam(model.parameters(), lr=0.01) # Learning rate from paper
 # criterion = nn.MSELoss() # MSE Loss from paper

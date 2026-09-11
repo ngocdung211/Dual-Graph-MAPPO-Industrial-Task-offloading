@@ -17,9 +17,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from baselines.graph_gat_mappo import GraphGATMAPPOAgent
+from baselines.gatma import GATMAAgent
 from baselines.mappo import MAPPOAgent
 from models.maddpg import EpsilonATNMADDPGAgent
-from utils.topology_graph_state import build_topology_graph_state
+from utils.topology_graph_state import (
+    LIGHTWEIGHT_TOPOLOGY_EDGE_FEATURE_DIM,
+    STANDARD_TOPOLOGY_EDGE_FEATURE_DIM,
+    build_topology_graph_state,
+)
 
 
 NUM_DEVICES = 30
@@ -28,7 +33,7 @@ NUM_SUBTASKS = 5
 STATE_DIM = 5 + NUM_SUBTASKS + 4 * NUM_SERVERS
 ACTION_DIM = NUM_SERVERS + 1
 NODE_FEATURE_DIM = 9 + NUM_SUBTASKS
-EDGE_FEATURE_DIM = 7
+EDGE_FEATURE_DIM = STANDARD_TOPOLOGY_EDGE_FEATURE_DIM
 
 
 def _parameter_count(parameters: Iterable[torch.nn.Parameter]) -> int:
@@ -87,6 +92,12 @@ def benchmark(warmup: int, repeats: int, trials: int) -> Dict[str, object]:
     graph_state = build_topology_graph_state(
         joint_state, num_devices=NUM_DEVICES, num_servers=NUM_SERVERS
     )
+    lightweight_graph_state = build_topology_graph_state(
+        joint_state,
+        num_devices=NUM_DEVICES,
+        num_servers=NUM_SERVERS,
+        lightweight=True,
+    )
 
     maddpg_agents = [
         EpsilonATNMADDPGAgent(
@@ -106,6 +117,16 @@ def benchmark(warmup: int, repeats: int, trials: int) -> Dict[str, object]:
         )
         for _ in range(NUM_DEVICES)
     ]
+    gatma_agents = [
+        GATMAAgent(
+            state_dim=STATE_DIM,
+            action_dim=ACTION_DIM,
+            num_agents=NUM_DEVICES,
+            num_servers=NUM_SERVERS,
+            agent_index=agent_index,
+        )
+        for agent_index in range(NUM_DEVICES)
+    ]
     graph_agent = GraphGATMAPPOAgent(
         num_devices=NUM_DEVICES,
         num_servers=NUM_SERVERS,
@@ -115,6 +136,16 @@ def benchmark(warmup: int, repeats: int, trials: int) -> Dict[str, object]:
         hidden_dim=64,
         device="cpu",
     )
+    lightweight_graph_agent = GraphGATMAPPOAgent(
+        num_devices=NUM_DEVICES,
+        num_servers=NUM_SERVERS,
+        node_feature_dim=NODE_FEATURE_DIM,
+        edge_feature_dim=LIGHTWEIGHT_TOPOLOGY_EDGE_FEATURE_DIM,
+        embedding_dim=64,
+        hidden_dim=64,
+        lightweight_topology=True,
+        device="cpu",
+    )
 
     for agent in maddpg_agents:
         agent.actor.eval()
@@ -122,9 +153,15 @@ def benchmark(warmup: int, repeats: int, trials: int) -> Dict[str, object]:
     for agent in mappo_agents:
         agent.actor.eval()
         agent.critic.eval()
+    for agent in gatma_agents:
+        agent.actor.eval()
+        agent.critic.eval()
     graph_agent.encoder.eval()
     graph_agent.actor.eval()
     graph_agent.critic.eval()
+    lightweight_graph_agent.encoder.eval()
+    lightweight_graph_agent.actor.eval()
+    lightweight_graph_agent.critic.eval()
 
     def maddpg_joint_inference() -> List[int]:
         return [
@@ -158,6 +195,19 @@ def benchmark(warmup: int, repeats: int, trials: int) -> Dict[str, object]:
             for index, agent in enumerate(mappo_agents)
         ]
 
+    def gatma_joint_inference() -> List[int]:
+        return [
+            int(torch.argmax(agent.actor(joint_state)).item())
+            for agent in gatma_agents
+        ]
+
+    def gatma_end_to_end_inference() -> List[int]:
+        current_joint_state = torch.as_tensor(joint_state_array)
+        return [
+            int(torch.argmax(agent.actor(current_joint_state)).item())
+            for agent in gatma_agents
+        ]
+
     def graph_joint_inference() -> List[int]:
         probabilities = graph_agent._actor_probabilities_for_graph_state(graph_state)
         return torch.argmax(probabilities, dim=-1).tolist()
@@ -167,6 +217,28 @@ def benchmark(warmup: int, repeats: int, trials: int) -> Dict[str, object]:
             joint_state_array, num_devices=NUM_DEVICES, num_servers=NUM_SERVERS
         )
         probabilities = graph_agent._actor_probabilities_for_graph_state(current_graph)
+        return torch.argmax(probabilities, dim=-1).tolist()
+
+    def lightweight_graph_joint_inference() -> List[int]:
+        probabilities = (
+            lightweight_graph_agent._actor_probabilities_for_graph_state(
+                lightweight_graph_state
+            )
+        )
+        return torch.argmax(probabilities, dim=-1).tolist()
+
+    def lightweight_graph_end_to_end_inference() -> List[int]:
+        current_graph = build_topology_graph_state(
+            joint_state_array,
+            num_devices=NUM_DEVICES,
+            num_servers=NUM_SERVERS,
+            lightweight=True,
+        )
+        probabilities = (
+            lightweight_graph_agent._actor_probabilities_for_graph_state(
+                current_graph
+            )
+        )
         return torch.argmax(probabilities, dim=-1).tolist()
 
     maddpg_optimized_parameters = [
@@ -181,12 +253,26 @@ def benchmark(warmup: int, repeats: int, trials: int) -> Dict[str, object]:
         for module in (agent.actor, agent.critic)
         for parameter in module.parameters()
     ]
+    gatma_optimized_parameters = [
+        parameter
+        for agent in gatma_agents
+        for module in (agent.actor, agent.critic)
+        for parameter in module.parameters()
+    ]
     graph_ppo_parameters = list(graph_agent.ppo_parameters)
     graph_warmup_parameters = list(graph_agent.topology_warmup_head.parameters())
+    lightweight_graph_ppo_parameters = list(
+        lightweight_graph_agent.ppo_parameters
+    )
+    lightweight_graph_warmup_parameters = list(
+        lightweight_graph_agent.topology_warmup_head.parameters()
+    )
 
     maddpg_flops = _profile_flops(maddpg_joint_inference)
     mappo_flops = _profile_flops(mappo_joint_inference)
+    gatma_flops = _profile_flops(gatma_joint_inference)
     graph_flops = _profile_flops(graph_joint_inference)
+    lightweight_graph_flops = _profile_flops(lightweight_graph_joint_inference)
 
     maddpg_latency = _latency_summary(
         _latency_samples_ms(maddpg_joint_inference, warmup, repeats, trials)
@@ -202,11 +288,32 @@ def benchmark(warmup: int, repeats: int, trials: int) -> Dict[str, object]:
     mappo_end_to_end_latency = _latency_summary(
         _latency_samples_ms(mappo_end_to_end_inference, warmup, repeats, trials)
     )
+    gatma_latency = _latency_summary(
+        _latency_samples_ms(gatma_joint_inference, warmup, repeats, trials)
+    )
+    gatma_end_to_end_latency = _latency_summary(
+        _latency_samples_ms(
+            gatma_end_to_end_inference, warmup, repeats, trials
+        )
+    )
     graph_latency = _latency_summary(
         _latency_samples_ms(graph_joint_inference, warmup, repeats, trials)
     )
     graph_end_to_end_latency = _latency_summary(
         _latency_samples_ms(graph_end_to_end_inference, warmup, repeats, trials)
+    )
+    lightweight_graph_latency = _latency_summary(
+        _latency_samples_ms(
+            lightweight_graph_joint_inference, warmup, repeats, trials
+        )
+    )
+    lightweight_graph_end_to_end_latency = _latency_summary(
+        _latency_samples_ms(
+            lightweight_graph_end_to_end_inference,
+            warmup,
+            repeats,
+            trials,
+        )
     )
 
     graph_common = {
@@ -218,6 +325,18 @@ def benchmark(warmup: int, repeats: int, trials: int) -> Dict[str, object]:
         "inference_flops": graph_flops,
         "neural_inference_latency": graph_latency,
         "end_to_end_policy_latency": graph_end_to_end_latency,
+    }
+    lightweight_graph_common = {
+        "ppo_trainable_parameters": _parameter_count(
+            lightweight_graph_ppo_parameters
+        ),
+        "deployment_parameters": _parameter_count(
+            list(lightweight_graph_agent.encoder.parameters())
+            + list(lightweight_graph_agent.actor.parameters())
+        ),
+        "inference_flops": lightweight_graph_flops,
+        "neural_inference_latency": lightweight_graph_latency,
+        "end_to_end_policy_latency": lightweight_graph_end_to_end_latency,
     }
     return {
         "metadata": {
@@ -264,6 +383,25 @@ def benchmark(warmup: int, repeats: int, trials: int) -> Dict[str, object]:
                 "neural_inference_latency": mappo_latency,
                 "end_to_end_policy_latency": mappo_end_to_end_latency,
             },
+            "GATMA": {
+                "optimized_trainable_parameters": _parameter_count(
+                    gatma_optimized_parameters
+                ),
+                "deployment_parameters": _parameter_count(
+                    parameter
+                    for agent in gatma_agents
+                    for parameter in agent.actor.parameters()
+                ),
+                "target_network_parameters": _parameter_count(
+                    parameter
+                    for agent in gatma_agents
+                    for module in (agent.target_actor, agent.target_critic)
+                    for parameter in module.parameters()
+                ),
+                "inference_flops": gatma_flops,
+                "neural_inference_latency": gatma_latency,
+                "end_to_end_policy_latency": gatma_end_to_end_latency,
+            },
             "Dual-GAT MAPPO w/o warmup": {
                 **graph_common,
                 "auxiliary_trainable_parameters": 0,
@@ -278,6 +416,16 @@ def benchmark(warmup: int, repeats: int, trials: int) -> Dict[str, object]:
                 ),
                 "total_trainable_parameters": _parameter_count(
                     graph_ppo_parameters + graph_warmup_parameters
+                ),
+            },
+            "Lightweight Dual-GAT MAPPO": {
+                **lightweight_graph_common,
+                "auxiliary_trainable_parameters": _parameter_count(
+                    lightweight_graph_warmup_parameters
+                ),
+                "total_trainable_parameters": _parameter_count(
+                    lightweight_graph_ppo_parameters
+                    + lightweight_graph_warmup_parameters
                 ),
             },
         },

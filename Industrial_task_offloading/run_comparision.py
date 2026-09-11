@@ -14,9 +14,11 @@ import torch
 import torch.nn.functional as F
 import random
 from tqdm import trange
+from baselines.gatma import GATMAAgent
 from baselines.graph_gat_mappo import GraphGATMAPPOAgent, GraphGATRolloutBuffer
 from baselines.maac import MAACAgent
 from baselines.mappo import MAPPOAgent, MultiAgentRolloutBuffer
+from baselines.shared_mappo import SharedMAPPOAgent, select_shared_joint_actions
 from baselines.offloading_baselines import (
     EdgeOnlyAgent,
     FeatureExtractionEdgeAgent,
@@ -39,6 +41,8 @@ from utils.comparison_outputs import (
 )
 from utils.priority_model_training import load_or_train_priority_model
 from utils.experiment_setup import (
+    TASK_PRIORITY_FEATURE_DIM,
+    broadcast_priority_order,
     build_priorities,
     build_task_priority_model,
     generate_task_dags_for_episode,
@@ -50,8 +54,14 @@ from utils.experiment_tracking import (
     initialize_experiment_tracker,
 )
 from utils.paper_config import PAPER_PARAMS
+from utils.gatma_training import update_gatma_agents_from_buffer
 from utils.maddpg_training import update_maddpg_agents_from_buffer
-from utils.topology_graph_state import TopologyGraphState, build_topology_graph_state
+from utils.topology_graph_state import (
+    LIGHTWEIGHT_TOPOLOGY_EDGE_FEATURE_DIM,
+    STANDARD_TOPOLOGY_EDGE_FEATURE_DIM,
+    TopologyGraphState,
+    build_topology_graph_state,
+)
 from utils.topology_scenarios_config import (
     TopologyScenario,
     available_topology_scenario_names,
@@ -60,6 +70,19 @@ from utils.topology_scenarios_config import (
     get_topology_scenario,
 )
 import time
+
+# On-policy agents that share the PPO advantage estimator and minibatch loop.
+PPO_FAMILY_AGENT_CLASSES = (
+    MAPPOAgent,
+    SharedMAPPOAgent,
+    GraphGATMAPPOAgent,
+)
+# Flat-state MAPPO agents. Graph-GAT variants are excluded because they take
+# their overrides from the dedicated --graph-gat-* flags.
+FLAT_MAPPO_AGENT_CLASSES = (
+    MAPPOAgent,
+    SharedMAPPOAgent,
+)
 
 
 FIXED_BASELINE_ALGORITHMS = frozenset(
@@ -123,11 +146,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--hyperparameters-dir",
-        default=str(provisional["comparison_hyperparameters_dir"]),
+        default=None,
         help=(
             "Directory containing the three Optuna *_best_params.json files. "
             "A profile.json locks environment provenance when present."
         ),
+    )
+    parser.add_argument(
+        "--experiment-seed",
+        type=int,
+        default=None,
+        help="Override the configured experiment seed.",
     )
     parser.add_argument(
         "--graph-gat-lr", type=float, default=None, help="Actor/critic learning rate."
@@ -220,6 +249,83 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Optional exact algorithm names to run, for example "
             "--algorithms \"Graph-GAT MAPPO\". Default: run all configured algorithms."
+        ),
+    )
+    parser.add_argument(
+        "--maddpg-epsilon-schedule",
+        choices=("linear_progress", "paper_decay"),
+        default="linear_progress",
+        help=(
+            "e-ATN-MADDPG exploration schedule. 'paper_decay' follows the "
+            "published rule epsilon = max(epsilon * decay, epsilon_min) and "
+            "ignores the tuned exploration_fraction/epsilon_final values."
+        ),
+    )
+    parser.add_argument(
+        "--mappo-entropy-coef",
+        type=float,
+        default=None,
+        help=(
+            "Entropy coefficient for every flat MAPPO agent (MAPPO, Mask "
+            "MAPPO, Shared MAPPO, Shared Mask MAPPO). Use it to match the "
+            "regularization given to Graph-GAT by --graph-gat-entropy-coef."
+        ),
+    )
+    parser.add_argument(
+        "--mappo-max-grad-norm",
+        type=float,
+        default=None,
+        help=(
+            "Gradient-norm clip for every flat MAPPO agent, matching "
+            "--graph-gat-max-grad-norm."
+        ),
+    )
+    parser.add_argument(
+        "--maddpg-updates-per-episode",
+        type=int,
+        default=1,
+        help=(
+            "Replay gradient rounds per episode for e-ATN-MADDPG and other "
+            "off-policy agents. The default of 1 reproduces earlier runs; set "
+            "it to the number of environment steps per episode "
+            "(time_slots * subtasks) to match the on-policy PPO update budget."
+        ),
+    )
+    parser.add_argument(
+        "--maddpg-actor-replay-actions",
+        action="store_true",
+        help=(
+            "Evaluate the e-ATN-MADDPG policy gradient with the other agents' "
+            "replayed actions, as in the published update rule, instead of "
+            "their current policy outputs."
+        ),
+    )
+    parser.add_argument(
+        "--use-gae",
+        action="store_true",
+        help=(
+            "Use GAE(lambda) advantages instead of one-step TD for every "
+            f"MAPPO-family agent. Lambda is fixed at "
+            f"{provisional['ppo_gae_lambda']}."
+        ),
+    )
+    parser.add_argument(
+        "--num-minibatches",
+        type=int,
+        default=1,
+        help=(
+            "PPO minibatches per epoch for every MAPPO-family agent. One "
+            "keeps the historical single full-batch update per epoch; the "
+            f"configured study value is {provisional['ppo_num_minibatches']}."
+        ),
+    )
+    parser.add_argument(
+        "--task-priority",
+        choices=("on", "off"),
+        default="on",
+        help=(
+            "Use the configured task graph model ('on') or bypass it with the "
+            "default DAG order 1,2,3,4,5 ('off')."
         ),
     )
     return parser.parse_args()
@@ -393,12 +499,28 @@ def build_algorithm_configs(
     graph_gat_warmup_episodes: Optional[int] = None,
     graph_gat_warmup_updates_per_step: Optional[int] = None,
     graph_gat_warmup_lr: Optional[float] = None,
+    mappo_entropy_coef: Optional[float] = None,
+    mappo_max_grad_norm: Optional[float] = None,
+    use_gae: bool = False,
+    num_minibatches: int = 1,
+    maddpg_epsilon_schedule: str = "linear_progress",
+    maddpg_actor_replay_actions: bool = False,
 ) -> Dict[str, Dict[str, object]]:
     """Build algorithm configurations for DRL and simple baselines.
 
     Args:
         graph_gat_device: Optional device override applied only to Graph-GAT
             MAPPO variants.
+        mappo_entropy_coef: Optional entropy coefficient applied to every flat
+            MAPPO agent, so baselines can match the Graph-GAT setting.
+        mappo_max_grad_norm: Optional gradient-norm clip applied to every flat
+            MAPPO agent.
+        use_gae: Enable GAE(lambda) advantages for every MAPPO-family agent.
+        num_minibatches: PPO minibatches per epoch for every MAPPO-family
+            agent.
+        maddpg_epsilon_schedule: e-ATN-MADDPG exploration schedule.
+        maddpg_actor_replay_actions: Use replayed actions for the other agents
+            in the e-ATN-MADDPG policy gradient.
         tuned_hyperparameters: Optional Optuna parameter mappings keyed by
             tuned model name.
         graph_gat_lr: Optional actor/critic learning-rate override.
@@ -427,6 +549,51 @@ def build_algorithm_configs(
         "Edge Only": {"class": EdgeOnlyAgent, "kwargs": {}},
         "Feature Extraction Edge": {"class": FeatureExtractionEdgeAgent, "kwargs": {}},
         "Random Offloading": {"class": RandomOffloadingAgent, "kwargs": {}},
+        "Mask MAPPO": {
+                    "class": MAPPOAgent,
+                    "kwargs": {
+                        "actor_lr": confirmed["rl_lr"],
+                        "critic_lr": confirmed["rl_lr"],
+                        "gamma": provisional["gamma"],
+                        "clip_param": provisional["mappo_clip_param"],
+                        "ppo_epochs": int(provisional["mappo_ppo_epochs"]),
+                        "entropy_coef": provisional["mappo_entropy_coef"],
+                        "value_loss_coef": provisional["mappo_value_loss_coef"],
+                        "max_grad_norm": provisional["mappo_max_grad_norm"],
+                        "hidden_dim": int(provisional["mappo_hidden_dim"]),
+                        "use_action_mask": True,
+                    },
+        },
+        "Shared MAPPO": {
+            "class": SharedMAPPOAgent,
+            "kwargs": {
+                "actor_lr": confirmed["rl_lr"],
+                "critic_lr": confirmed["rl_lr"],
+                "gamma": provisional["gamma"],
+                "clip_param": provisional["mappo_clip_param"],
+                "ppo_epochs": int(provisional["mappo_ppo_epochs"]),
+                "entropy_coef": provisional["mappo_entropy_coef"],
+                "value_loss_coef": provisional["mappo_value_loss_coef"],
+                "max_grad_norm": provisional["mappo_max_grad_norm"],
+                "hidden_dim": int(provisional["mappo_hidden_dim"]),
+                "use_action_mask": False,
+            },
+        },
+        "Shared Mask MAPPO": {
+            "class": SharedMAPPOAgent,
+            "kwargs": {
+                "actor_lr": confirmed["rl_lr"],
+                "critic_lr": confirmed["rl_lr"],
+                "gamma": provisional["gamma"],
+                "clip_param": provisional["mappo_clip_param"],
+                "ppo_epochs": int(provisional["mappo_ppo_epochs"]),
+                "entropy_coef": provisional["mappo_entropy_coef"],
+                "value_loss_coef": provisional["mappo_value_loss_coef"],
+                "max_grad_norm": provisional["mappo_max_grad_norm"],
+                "hidden_dim": int(provisional["mappo_hidden_dim"]),
+                "use_action_mask": True,
+            },
+        },
         "e-ATN-MADDPG": {
             "class": EpsilonATNMADDPGAgent,
             "batch_size": int(provisional["batch_size"]),
@@ -446,6 +613,23 @@ def build_algorithm_configs(
                 ],
             },
         },
+        "GATMA": {
+            "class": GATMAAgent,
+            "batch_size": 128,
+            "replay_buffer_capacity": 100000,
+            "kwargs": {
+                "actor_lr": 1e-4,
+                "critic_lr": 1e-5,
+                "gamma": 0.95,
+                "tau": 0.01,
+                "hidden_dim": 64,
+                "embedding_dim": 64,
+                "num_heads": 4,
+                "epsilon_init": 0.99,
+                "epsilon_min": 0.01,
+                "exploration_fraction": 1.0,
+            },
+        },
         "MAPPO": {
             "class": MAPPOAgent,
             "kwargs": {
@@ -461,6 +645,7 @@ def build_algorithm_configs(
                 "use_action_mask": False,
             },
         },
+
         "Graph-GAT MAPPO": {
             "class": GraphGATMAPPOAgent,
             "kwargs": {
@@ -480,6 +665,27 @@ def build_algorithm_configs(
                 "device": selected_graph_gat_device,
             },
         },
+
+        "Graph-GAT Mask MAPPO": {
+                    "class": GraphGATMAPPOAgent,
+                    "kwargs": {
+                        "lr": confirmed["rl_lr"],
+                        "encoder_lr": confirmed["rl_lr"],
+                        "gamma": provisional["gamma"],
+                        "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
+                        "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
+                        "clip_param": provisional["graph_gat_clip_param"],
+                        "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
+                        "entropy_coef": provisional["graph_gat_entropy_coef"],
+                        "value_loss_coef": provisional["graph_gat_value_loss_coef"],
+                        "max_grad_norm": provisional["graph_gat_max_grad_norm"],
+                        "use_action_mask": True,
+                        "topology_warmup_episodes": 0,
+                        "topology_warmup_updates_per_step": 0,
+                        "device": selected_graph_gat_device,
+                    },
+        },
+
         "Graph-GAT Warmup MAPPO": {
             "class": GraphGATMAPPOAgent,
             "kwargs": {
@@ -503,6 +709,31 @@ def build_algorithm_configs(
                 "topology_warmup_lr": provisional["graph_gat_topology_warmup_lr"],
                 "device": selected_graph_gat_device,
             },
+        },
+
+        "Graph-GAT Warmup Mask MAPPO": {
+                    "class": GraphGATMAPPOAgent,
+                    "kwargs": {
+                        "lr": confirmed["rl_lr"],
+                        "encoder_lr": confirmed["rl_lr"],
+                        "gamma": provisional["gamma"],
+                        "hidden_dim": int(provisional["graph_gat_hidden_dim"]),
+                        "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
+                        "clip_param": provisional["graph_gat_clip_param"],
+                        "ppo_epochs": int(provisional["graph_gat_ppo_epochs"]),
+                        "entropy_coef": provisional["graph_gat_entropy_coef"],
+                        "value_loss_coef": provisional["graph_gat_value_loss_coef"],
+                        "max_grad_norm": provisional["graph_gat_max_grad_norm"],
+                        "use_action_mask": True,
+                        "topology_warmup_episodes": int(
+                            provisional["graph_gat_topology_warmup_episodes"]
+                        ),
+                        "topology_warmup_updates_per_step": int(
+                            provisional["graph_gat_topology_warmup_updates_per_step"]
+                        ),
+                        "topology_warmup_lr": provisional["graph_gat_topology_warmup_lr"],
+                        "device": selected_graph_gat_device,
+                    },
         },
     }
     if tuned_hyperparameters is not None:
@@ -542,6 +773,20 @@ def build_algorithm_configs(
                 "hidden_dim": int(mappo_params["hidden_dim"]),
             }
         )
+        configs["Mask MAPPO"]["kwargs"].update(
+                    {
+                        "actor_lr": float(mappo_params["actor_lr"]),
+                        "critic_lr": float(mappo_params["critic_lr"]),
+                        "gamma": float(mappo_params["gamma"]),
+                        "clip_param": float(mappo_params["clip_param"]),
+                        "ppo_epochs": int(mappo_params["ppo_epochs"]),
+                        "entropy_coef": float(mappo_params["entropy_coef"]),
+                        "value_loss_coef": float(mappo_params["value_loss_coef"]),
+                        "max_grad_norm": mappo_params["max_grad_norm"],
+                        "hidden_dim": int(mappo_params["hidden_dim"]),
+                        "use_action_mask": True,
+                    }
+                )
 
         graph_params = tuned_hyperparameters["Graph-GAT Warmup MAPPO"]
         shared_lr = graph_params.get("lr")
@@ -575,6 +820,12 @@ def build_algorithm_configs(
             "topology_warmup_episodes": 0,
             "topology_warmup_updates_per_step": 0,
         }
+        # configs["Graph-GAT Mask MAPPO"]["kwargs"] = {
+        #             **graph_kwargs,
+        #             "use_action_mask": True,
+        #             "topology_warmup_episodes": 0,
+        #             "topology_warmup_updates_per_step": 0,
+        # }
         configs["Graph-GAT Warmup MAPPO"]["kwargs"] = {
             **graph_kwargs,
             "topology_warmup_episodes": int(graph_params["warmup_episodes"]),
@@ -582,6 +833,22 @@ def build_algorithm_configs(
                 graph_params["warmup_updates_per_step"]
             ),
         }
+        # configs["Graph-GAT Warmup Mask MAPPO"]["kwargs"] = {
+        #             **graph_kwargs,
+        #             "use_action_mask": True,
+        #             "topology_warmup_episodes": int(graph_params["warmup_episodes"]),
+        #             "topology_warmup_updates_per_step": int(
+        #                 graph_params["warmup_updates_per_step"]
+        #             ),
+        # }
+        # configs["Lightweight Graph-GAT Warmup MAPPO"]["kwargs"] = {
+        #     **graph_kwargs,
+        #     "topology_warmup_episodes": int(graph_params["warmup_episodes"]),
+        #     "topology_warmup_updates_per_step": int(
+        #         graph_params["warmup_updates_per_step"]
+        #     ),
+        #     "lightweight_topology": True,
+        # }
     graph_overrides = {
         "lr": graph_gat_lr,
         "actor_lr": graph_gat_lr,
@@ -612,6 +879,35 @@ def build_algorithm_configs(
         config["kwargs"].update(selected_graph_overrides)
         if "Warmup" in algorithm_name:
             config["kwargs"].update(selected_warmup_overrides)
+
+    flat_mappo_overrides = {
+        "entropy_coef": mappo_entropy_coef,
+        "max_grad_norm": mappo_max_grad_norm,
+    }
+    selected_flat_mappo_overrides = {
+        key: value
+        for key, value in flat_mappo_overrides.items()
+        if value is not None
+    }
+    if selected_flat_mappo_overrides:
+        for config in configs.values():
+            if config["class"] in FLAT_MAPPO_AGENT_CLASSES:
+                config["kwargs"].update(selected_flat_mappo_overrides)
+
+    ppo_estimator_kwargs = {
+        "use_gae": bool(use_gae),
+        "gae_lambda": float(provisional["ppo_gae_lambda"]),
+        "num_minibatches": int(num_minibatches),
+    }
+    maddpg_fidelity_kwargs = {
+        "epsilon_schedule": str(maddpg_epsilon_schedule),
+        "actor_uses_replay_actions": bool(maddpg_actor_replay_actions),
+    }
+    for config in configs.values():
+        if config["class"] in PPO_FAMILY_AGENT_CLASSES:
+            config["kwargs"].update(ppo_estimator_kwargs)
+        if config["class"] is EpsilonATNMADDPGAgent:
+            config["kwargs"].update(maddpg_fidelity_kwargs)
     return configs
 
 
@@ -684,6 +980,20 @@ def build_priorities_by_mode(
     return priorities
 
 
+def build_fixed_priorities_by_mode(
+    task_dag: TaskDAG,
+    device_ids: List[int],
+    priority_model: torch.nn.Module,
+    mode: str,
+) -> Dict[int, List[int]]:
+    """Infer one priority order and reuse it for every device and slot."""
+    template_priorities = build_priorities_by_mode(
+        {task_dag.id: task_dag}, priority_model, mode
+    )
+    priority_order = template_priorities[task_dag.id]
+    return broadcast_priority_order(device_ids, priority_order)
+
+
 def _collect_joint_actions(
     agents: Sequence[object], joint_state: np.ndarray, env: DITENEnv | None = None
 ) -> Tuple[List[int], int, int]:
@@ -700,9 +1010,12 @@ def _collect_joint_actions(
     joint_actions: List[int] = []
     local_count = 0
     edge_count = 0
+    full_joint_state = torch.as_tensor(joint_state, dtype=torch.float32)
     for agent_index, agent in enumerate(agents):
         agent_state = torch.FloatTensor(joint_state[agent_index])
-        if env is not None and hasattr(agent, "select_action_for_subtask"):
+        if isinstance(agent, GATMAAgent):
+            action = agent.select_action(full_joint_state)
+        elif env is not None and hasattr(agent, "select_action_for_subtask"):
             device = env.devices[agent_index]
             step_index = env.current_step[device.id]
             priority_order = env.priorities.get(device.id, [])
@@ -745,6 +1058,7 @@ def _collect_graph_gat_actions(
         torch.as_tensor(joint_state, dtype=torch.float32),
         num_devices=num_devices,
         num_servers=num_servers,
+        lightweight=agent.lightweight_topology,
     )
     graph_build_time = time.perf_counter() - graph_build_start
 
@@ -1008,6 +1322,14 @@ def _update_agents_from_buffer(
         batch_size: Batch size for sampling.
         gamma: Discount factor.
     """
+    if agents and all(isinstance(agent, GATMAAgent) for agent in agents):
+        return update_gatma_agents_from_buffer(
+            agents,
+            replay_buffer,
+            batch_size,
+            gamma,
+        )
+
     if agents and all(
         isinstance(agent, EpsilonATNMADDPGAgent) for agent in agents
     ):
@@ -1139,10 +1461,12 @@ def train_algorithm(
     experiment_note: str = "",
     experiment_tracker: Optional[ExperimentTracker] = None,
     experiment_seed: Optional[int] = None,
+    fixed_priority_order: Optional[List[int]] = None,
     episode_callback: Optional[
         Callable[[int, Dict[str, List[float]]], None]
     ] = None,
     show_progress: bool = True,
+    replay_updates_per_episode: int = 1,
 ) -> Tuple[Dict[str, List[float]], Optional[Dict[str, Any]]]:
     """Train one algorithm configuration and return metrics and checkpoint.
 
@@ -1161,8 +1485,11 @@ def train_algorithm(
         experiment_note: Optional note stored in checkpoint metadata.
         experiment_tracker: Optional per-episode external metric tracker.
         experiment_seed: Optional training seed override.
+        fixed_priority_order: Optional shared order inferred before this call.
         episode_callback: Optional callback invoked after each completed update.
         show_progress: Whether to print progress and diagnostic summaries.
+        replay_updates_per_episode: Gradient rounds per episode for off-policy
+            replay agents such as e-ATN-MADDPG.
 
     Returns:
         Tuple of metric history and optional trainable model checkpoint payload.
@@ -1174,6 +1501,10 @@ def train_algorithm(
     if experiment_seed is None:
         experiment_seed = int(provisional["experiment_seed"])
     set_seed(experiment_seed)  # Reset seed for fair comparison.
+    # The loader keeps a private generator so every algorithm replays the same
+    # task-workload sequence, even though agents consume the global `random`
+    # stream at different rates (e-ATN-MADDPG draws per epsilon-greedy action).
+    data_loader.reseed(experiment_seed)
 
     time_slots = int(confirmed["time_slots"])
     env = DITENEnv(
@@ -1200,13 +1531,22 @@ def train_algorithm(
     ACTION_DIM = 1 + len(servers)
     graph_priority_width = STATE_DIM - (5 + 4 * len(servers))
     graph_node_feature_dim = 9 + graph_priority_width
-    graph_edge_feature_dim = 7
+    lightweight_topology = bool(
+        agent_config.get("kwargs", {}).get("lightweight_topology", False)
+    )
+    graph_edge_feature_dim = (
+        LIGHTWEIGHT_TOPOLOGY_EDGE_FEATURE_DIM
+        if lightweight_topology
+        else STANDARD_TOPOLOGY_EDGE_FEATURE_DIM
+    )
     # JOINT_STATE_DIM = STATE_DIM * len(devices)
     # JOINT_ACTION_DIM = len(devices)
     
     # Initialize Agents dynamically based on the config
     agent_class = agent_config["class"]
     uses_graph_gat_mappo = agent_class is GraphGATMAPPOAgent
+    uses_gatma = agent_class is GATMAAgent
+    uses_shared_mappo = agent_class is SharedMAPPOAgent
     agents: List[object] = []
     if uses_graph_gat_mappo:
         agents.append(
@@ -1220,19 +1560,42 @@ def train_algorithm(
         )
         if show_progress:
             print(f"[{algo_name}] Graph-GAT device: {agents[0].device}")
+    elif uses_shared_mappo:
+        agents.append(
+            agent_class(
+                state_dim=STATE_DIM,
+                action_dim=ACTION_DIM,
+                num_agents=len(devices),
+                **agent_config.get("kwargs", {}),
+            )
+        )
     else:
-        for _ in range(len(devices)):
+        for agent_index in range(len(devices)):
+            extra_agent_kwargs = {}
+            if uses_gatma:
+                extra_agent_kwargs = {
+                    "num_servers": len(servers),
+                    "agent_index": agent_index,
+                }
             agent = agent_class(
                 state_dim=STATE_DIM, action_dim=ACTION_DIM,
                 num_agents=len(devices),
+                **extra_agent_kwargs,
                 **agent_config.get("kwargs", {})
             )
             agents.append(agent)
 
-    replay_buffer = MultiAgentReplayBuffer(capacity=int(provisional["replay_buffer_capacity"]))
+    replay_buffer = MultiAgentReplayBuffer(
+        capacity=int(
+            agent_config.get(
+                "replay_buffer_capacity",
+                provisional["replay_buffer_capacity"],
+            )
+        )
+    )
     rollout_buffer = MultiAgentRolloutBuffer()
     graph_rollout_buffer = GraphGATRolloutBuffer()
-    uses_rollout_buffer = (
+    uses_rollout_buffer = uses_shared_mappo or (
         not uses_graph_gat_mappo
         and all(hasattr(agent, "select_action_with_log_prob") for agent in agents)
     )
@@ -1240,6 +1603,35 @@ def train_algorithm(
     gamma = float(
         agent_config.get("kwargs", {}).get("gamma", provisional["gamma"])
     )
+    shared_priority_inference_time = 0.0
+    if fixed_priority_order is None:
+        template_task_dags = generate_task_dags_for_episode(
+            [devices[0]],
+            data_loader,
+            t_max=provisional["t_max"],
+            e_max=provisional["e_max"],
+            cpu_cycle_scale=provisional["task_cpu_cycle_scale"],
+        )
+        template_task_dag = template_task_dags[devices[0].id]
+        shared_priority_start = time.perf_counter()
+        fixed_priorities = build_fixed_priorities_by_mode(
+            template_task_dag,
+            [device.id for device in devices],
+            priority_model,
+            priority_mode,
+        )
+        shared_priority_inference_time = (
+            time.perf_counter() - shared_priority_start
+        )
+    else:
+        fixed_priorities = broadcast_priority_order(
+            [device.id for device in devices], fixed_priority_order
+        )
+    if show_progress:
+        print(
+            f"[{algo_name}] Fixed task-priority order: "
+            f"{fixed_priorities[devices[0].id]}"
+        )
     
     # Track metrics
     history = {
@@ -1330,13 +1722,19 @@ def train_algorithm(
         episode_graph_update_time = 0.0
         episode_graph_transition_count = 0.0
         episode_dag_generation_time = 0.0
-        episode_priority_inference_time = 0.0
+        episode_priority_inference_time = (
+            shared_priority_inference_time if episode == 0 else 0.0
+        )
         episode_start_slot_time = 0.0
         episode_action_collection_time = 0.0
         episode_env_step_time = 0.0
         episode_metric_summary_time = 0.0
         episode_rollout_storage_time = 0.0
         episode_model_update_time = 0.0
+        episode_replay_update_rounds = 0.0
+        episode_actor_loss_total = 0.0
+        episode_critic_loss_total = 0.0
+        episode_mean_q_total = 0.0
 
         episode_done = False
         for _ in range(time_slots):
@@ -1359,14 +1757,8 @@ def train_algorithm(
             episode_dag_generation_time += (
                 time.perf_counter() - dag_generation_start
             )
-            priority_inference_start = time.perf_counter()
-            priorities = build_priorities_by_mode(task_dags, priority_model, priority_mode)
-            episode_priority_inference_time += (
-                time.perf_counter() - priority_inference_start
-            )
-
             start_slot_start = time.perf_counter()
-            current_joint_state = env.start_time_slot(task_dags, priorities)
+            current_joint_state = env.start_time_slot(task_dags, fixed_priorities)
             episode_start_slot_time += time.perf_counter() - start_slot_start
             slot_done = False
             while not slot_done and not episode_done:
@@ -1395,6 +1787,12 @@ def train_algorithm(
                         episode_graph_warmup_loss_total += graph_warmup_loss
                         episode_graph_warmup_count += 1.0
                     episode_graph_action_time += graph_action_time
+                elif uses_shared_mappo:
+                    joint_actions, local_count, edge_count = (
+                        select_shared_joint_actions(
+                            agents[0], current_joint_state
+                        )
+                    )
                 else:
                     joint_actions, local_count, edge_count = _collect_joint_actions(
                         agents, current_joint_state, env
@@ -1441,6 +1839,7 @@ def train_algorithm(
                         torch.as_tensor(next_joint_state, dtype=torch.float32),
                         num_devices=len(devices),
                         num_servers=len(servers),
+                        lightweight=agents[0].lightweight_topology,
                     )
                     episode_graph_build_time += (
                         time.perf_counter() - next_graph_build_start
@@ -1455,10 +1854,13 @@ def train_algorithm(
                     )
                     episode_graph_transition_count += 1.0
                 elif uses_rollout_buffer:
-                    old_log_probs = [
-                        float(getattr(agent, "last_action_log_prob", 0.0))
-                        for agent in agents
-                    ]
+                    if uses_shared_mappo:
+                        old_log_probs = list(agents[0].last_joint_log_probs)
+                    else:
+                        old_log_probs = [
+                            float(getattr(agent, "last_action_log_prob", 0.0))
+                            for agent in agents
+                        ]
                     rollout_buffer.push(
                         current_joint_state,
                         joint_actions,
@@ -1479,6 +1881,29 @@ def train_algorithm(
                     time.perf_counter() - rollout_storage_start
                 )
                 current_joint_state = next_joint_state
+
+            if uses_gatma:
+                slot_update_start = time.perf_counter()
+                slot_update_metrics = update_gatma_agents_from_buffer(
+                    agents,
+                    replay_buffer,
+                    batch_size,
+                    gamma,
+                )
+                episode_model_update_time += (
+                    time.perf_counter() - slot_update_start
+                )
+                update_rounds = slot_update_metrics["update_rounds"]
+                episode_replay_update_rounds += update_rounds
+                episode_actor_loss_total += (
+                    update_rounds * slot_update_metrics["actor_loss"]
+                )
+                episode_critic_loss_total += (
+                    update_rounds * slot_update_metrics["critic_loss"]
+                )
+                episode_mean_q_total += (
+                    update_rounds * slot_update_metrics["mean_q"]
+                )
         
             total_slot_actions = slot_local + slot_edge
             if total_slot_actions == 0:
@@ -1597,13 +2022,38 @@ def train_algorithm(
             "critic_loss": 0.0,
             "mean_q": 0.0,
         }
-        if uses_rollout_buffer:
+        if uses_gatma:
+            completed_updates = max(episode_replay_update_rounds, 1.0)
+            maddpg_update_metrics = {
+                "update_rounds": episode_replay_update_rounds,
+                "actor_loss": episode_actor_loss_total / completed_updates,
+                "critic_loss": episode_critic_loss_total / completed_updates,
+                "mean_q": episode_mean_q_total / completed_updates,
+            }
+        elif uses_shared_mappo:
+            agents[0].update_from_rollout(rollout_buffer)
+        elif uses_rollout_buffer:
             _update_agents_from_rollout(agents, rollout_buffer, gamma)
         elif not uses_graph_gat_mappo:
-            maddpg_update_metrics = _update_agents_from_buffer(
-                agents, replay_buffer, batch_size, gamma
-            )
-        if not uses_graph_gat_mappo:
+            # Off-policy agents run `replay_updates_per_episode` gradient
+            # rounds so their update budget can be matched to the on-policy
+            # PPO family instead of being fixed at one round per episode.
+            for _ in range(max(1, int(replay_updates_per_episode))):
+                round_metrics = _update_agents_from_buffer(
+                    agents, replay_buffer, batch_size, gamma
+                )
+                if round_metrics["update_rounds"] == 0.0:
+                    break
+                maddpg_update_metrics = {
+                    "update_rounds": (
+                        maddpg_update_metrics["update_rounds"]
+                        + round_metrics["update_rounds"]
+                    ),
+                    "actor_loss": round_metrics["actor_loss"],
+                    "critic_loss": round_metrics["critic_loss"],
+                    "mean_q": round_metrics["mean_q"],
+                }
+        if not uses_graph_gat_mappo and not uses_gatma:
             episode_model_update_time = time.perf_counter() - model_update_start
         history["replay_buffer_size"].append(float(len(replay_buffer)))
         history["maddpg_update_rounds"].append(
@@ -1766,6 +2216,7 @@ def evaluate_algorithm_checkpoint(
     experiment_seed: int,
     priority_mode: str = "gat",
     topology_scenario: Optional[TopologyScenario] = None,
+    fixed_priority_order: Optional[List[int]] = None,
 ) -> Dict[str, List[float]]:
     """Evaluate a trained policy with deterministic actions.
 
@@ -1775,6 +2226,7 @@ def evaluate_algorithm_checkpoint(
     confirmed = PAPER_PARAMS["confirmed"]
     provisional = PAPER_PARAMS["provisional_table2_needed"]
     set_seed(experiment_seed)
+    data_loader.reseed(experiment_seed)
     env = DITENEnv(
         devices,
         servers,
@@ -1800,6 +2252,8 @@ def evaluate_algorithm_checkpoint(
     action_dim = 1 + len(servers)
     agent_class = agent_config["class"]
     uses_graph_gat_mappo = agent_class is GraphGATMAPPOAgent
+    uses_gatma = agent_class is GATMAAgent
+    uses_shared_mappo = agent_class is SharedMAPPOAgent
     agents: List[object] = []
     if uses_graph_gat_mappo:
         graph_dims = checkpoint.get("graph_dims", {})
@@ -1812,16 +2266,32 @@ def evaluate_algorithm_checkpoint(
                 **agent_config.get("kwargs", {}),
             )
         )
-    else:
-        agents = [
+    elif uses_shared_mappo:
+        agents.append(
             agent_class(
                 state_dim=state_dim,
                 action_dim=action_dim,
                 num_agents=len(devices),
                 **agent_config.get("kwargs", {}),
             )
-            for _ in devices
-        ]
+        )
+    else:
+        for agent_index, _ in enumerate(devices):
+            extra_agent_kwargs = {}
+            if uses_gatma:
+                extra_agent_kwargs = {
+                    "num_servers": len(servers),
+                    "agent_index": agent_index,
+                }
+            agents.append(
+                agent_class(
+                    state_dim=state_dim,
+                    action_dim=action_dim,
+                    num_agents=len(devices),
+                    **extra_agent_kwargs,
+                    **agent_config.get("kwargs", {}),
+                )
+            )
 
     checkpoint_agents = checkpoint.get("agents", [])
     if len(checkpoint_agents) != len(agents):
@@ -1849,6 +2319,24 @@ def evaluate_algorithm_checkpoint(
         "penalty_count": [],
     }
     time_slots = int(confirmed["time_slots"])
+    if fixed_priority_order is None:
+        template_task_dags = generate_task_dags_for_episode(
+            [devices[0]],
+            data_loader,
+            t_max=provisional["t_max"],
+            e_max=provisional["e_max"],
+            cpu_cycle_scale=provisional["task_cpu_cycle_scale"],
+        )
+        fixed_priorities = build_fixed_priorities_by_mode(
+            template_task_dags[devices[0].id],
+            [device.id for device in devices],
+            priority_model,
+            priority_mode,
+        )
+    else:
+        fixed_priorities = broadcast_priority_order(
+            [device.id for device in devices], fixed_priority_order
+        )
     for _ in range(num_episodes):
         env.reset_episode()
         episode_done = False
@@ -1875,10 +2363,7 @@ def evaluate_algorithm_checkpoint(
                 e_max=provisional["e_max"],
                 cpu_cycle_scale=provisional["task_cpu_cycle_scale"],
             )
-            priorities = build_priorities_by_mode(
-                task_dags, priority_model, priority_mode
-            )
-            current_joint_state = env.start_time_slot(task_dags, priorities)
+            current_joint_state = env.start_time_slot(task_dags, fixed_priorities)
             slot_done = False
             slot_reward = 0.0
             slot_step_count = 0
@@ -1890,8 +2375,23 @@ def evaluate_algorithm_checkpoint(
                         ),
                         num_devices=len(devices),
                         num_servers=len(servers),
+                        lightweight=agents[0].lightweight_topology,
                     )
                     joint_actions = agents[0].select_greedy_actions(graph_state)
+                elif uses_shared_mappo:
+                    joint_actions = agents[0].select_greedy_joint_actions(
+                        torch.as_tensor(
+                            current_joint_state, dtype=torch.float32
+                        )
+                    )
+                elif uses_gatma:
+                    full_joint_state = torch.as_tensor(
+                        current_joint_state, dtype=torch.float32
+                    )
+                    joint_actions = [
+                        agent.select_greedy_action(full_joint_state)
+                        for agent in agents
+                    ]
                 else:
                     joint_actions = [
                         agent.select_greedy_action(
@@ -1944,8 +2444,13 @@ if __name__ == "__main__":
     args = parse_args()
     confirmed = PAPER_PARAMS["confirmed"]
     provisional = PAPER_PARAMS["provisional_table2_needed"]
-    experiment_seed = int(provisional["experiment_seed"])
-    set_seed(experiment_seed)
+    # experiment_seed = int(provisional["experiment_seed"])
+    experiment_seed = (
+        int(args.experiment_seed)
+        if args.experiment_seed is not None
+        else int(provisional["experiment_seed"])
+    )
+    # set_seed(experiment_seed)
     BANDWIDTH, NOISE_POWER = confirmed["bandwidth_hz"], confirmed["noise_power_dbm"]
     topology_scenario = get_topology_scenario(args.topology_scenario)
     topology_metrics = compute_topology_metrics(topology_scenario)
@@ -1977,7 +2482,7 @@ if __name__ == "__main__":
     priority_model_name = str(provisional["priority_model"]).lower()
     priority_model = build_task_priority_model(
         priority_model_name,
-        num_features=3,
+        num_features=TASK_PRIORITY_FEATURE_DIM,
         hidden_dim=int(confirmed["gcn_hidden_dim"]),
     )
     priority_ckpt_path = get_priority_checkpoint_path(priority_model_name)
@@ -1988,15 +2493,30 @@ if __name__ == "__main__":
         cpu_cycle_scale=provisional["task_cpu_cycle_scale"],
     )
 
-    priority_model = load_or_train_priority_model(
-        priority_model=priority_model,
-        dag_sampler=sample_training_dag,
-        checkpoint_path=priority_ckpt_path,
-        epochs=int(provisional["gcn_pretrain_epochs"]),
-        samples_per_epoch=int(provisional["gcn_samples_per_epoch"]),
-        lr=confirmed["gcn_lr"],
-        model_label=priority_model_name.upper(),
-    )
+    priority_template = sample_training_dag()
+    if args.task_priority == "on":
+        priority_model = load_or_train_priority_model(
+            priority_model=priority_model,
+            dag_sampler=sample_training_dag,
+            checkpoint_path=priority_ckpt_path,
+            epochs=int(provisional["gcn_pretrain_epochs"]),
+            samples_per_epoch=int(provisional["gcn_samples_per_epoch"]),
+            lr=confirmed["gcn_lr"],
+            model_label=priority_model_name.upper(),
+        )
+        priority_inference_start = time.perf_counter()
+        fixed_priority_order = build_priorities(
+            {priority_template.id: priority_template}, priority_model
+        )[priority_template.id]
+        priority_inference_seconds = time.perf_counter() - priority_inference_start
+        print(
+            f"Task priority ON ({priority_model_name.upper()}): "
+            f"{fixed_priority_order} "
+            f"(one-time inference: {priority_inference_seconds:.6f}s)"
+        )
+    else:
+        fixed_priority_order = sorted(priority_template.subtasks)
+        print(f"Task priority OFF (default DAG order): {fixed_priority_order}")
     
     server_compute_seed = experiment_seed
     device_compute_seed = experiment_seed + 1
@@ -2018,18 +2538,19 @@ if __name__ == "__main__":
     )
 
     # 2. Define Algorithms to Compare
-    tuned_hyperparameters, hyperparameter_profile = load_tuned_hyperparameters(
-        args.hyperparameters_dir
-    )
-    topology_metrics["hyperparameter_profile"] = hyperparameter_profile
-    print(
-        "Hyperparameter profile: "
-        f"{hyperparameter_profile['name']} ({hyperparameter_profile['path']})"
-    )
+    if args.hyperparameters_dir is not None:
+        tuned_hyperparameters, hyperparameter_profile = load_tuned_hyperparameters(
+            args.hyperparameters_dir
+        )
+        topology_metrics["hyperparameter_profile"] = hyperparameter_profile
+        print(
+            "Hyperparameter profile: "
+            f"{hyperparameter_profile['name']} ({hyperparameter_profile['path']})"
+        )
     algorithms = select_algorithm_configs(
         build_algorithm_configs(
             args.graph_gat_device,
-            tuned_hyperparameters=tuned_hyperparameters,
+            tuned_hyperparameters=None,
             graph_gat_lr=args.graph_gat_lr,
             graph_gat_encoder_lr=args.graph_gat_encoder_lr,
             graph_gat_hidden_dim=args.graph_gat_hidden_dim,
@@ -2044,6 +2565,12 @@ if __name__ == "__main__":
                 args.graph_gat_warmup_updates_per_step
             ),
             graph_gat_warmup_lr=args.graph_gat_warmup_lr,
+            mappo_entropy_coef=args.mappo_entropy_coef,
+            mappo_max_grad_norm=args.mappo_max_grad_norm,
+            use_gae=args.use_gae,
+            num_minibatches=args.num_minibatches,
+            maddpg_epsilon_schedule=args.maddpg_epsilon_schedule,
+            maddpg_actor_replay_actions=args.maddpg_actor_replay_actions,
         ),
         args.algorithms,
     )
@@ -2114,7 +2641,10 @@ if __name__ == "__main__":
             mode=args.wandb_mode,
             project=args.wandb_project,
             entity=args.wandb_entity,
-            run_name=f"{algo_name} - {topology_scenario.name}",
+            run_name=(
+                f"{algo_name} - {topology_scenario.name} - "
+                f"priority-{args.task_priority}"
+            ),
             group=tracking_group,
             notes=experiment_note,
             config={
@@ -2127,7 +2657,11 @@ if __name__ == "__main__":
                 "num_servers": len(servers),
                 "episodes": run_episodes,
                 "seed": experiment_seed,
-                "priority_model": priority_model_name,
+                "task_priority": args.task_priority,
+                "priority_model": (
+                    priority_model_name if args.task_priority == "on" else "none"
+                ),
+                "priority_order": fixed_priority_order,
             },
         )
         if experiment_tracker.url:
@@ -2147,6 +2681,9 @@ if __name__ == "__main__":
                 topology_metrics=topology_metrics,
                 experiment_note=experiment_note,
                 experiment_tracker=experiment_tracker,
+                fixed_priority_order=fixed_priority_order,
+                experiment_seed=experiment_seed,
+                replay_updates_per_episode=args.maddpg_updates_per_episode,
             )
         finally:
             experiment_tracker.finish()
@@ -2181,6 +2718,7 @@ if __name__ == "__main__":
     checkpoint_paths = output_paths["checkpoint_paths"]
     
     print(f"Plots and last training states saved successfully! JSONL: {last_state_path}")
+    print(f"Per-episode history CSV: {output_paths['episode_history_path']}")
     if checkpoint_paths:
         print("Model checkpoints saved:")
         for checkpoint_path in checkpoint_paths:

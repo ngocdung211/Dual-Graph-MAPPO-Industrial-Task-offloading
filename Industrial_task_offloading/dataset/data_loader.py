@@ -2,21 +2,34 @@
 
 import os
 import random
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from PIL import Image
 
 class KolektorSDDLoader:
     """Load KolektorSDD images and derive TaskDAG subtask parameters."""
 
-    def __init__(self, dataset_path: str):
+    def __init__(self, dataset_path: str, seed: Optional[int] = None):
         """Initialize the loader.
 
         Args:
             dataset_path: Root path to the KolektorSDD dataset.
+            seed: Optional seed for the loader-private task sampler. The loader
+                never draws from the global `random` stream so that the task
+                workload is identical across algorithms regardless of how much
+                randomness an agent consumes.
         """
         self.dataset_path: str = dataset_path
         self.image_paths: List[str] = self._index_dataset()
+        self.random_generator: random.Random = random.Random(seed)
+
+    def reseed(self, seed: int) -> None:
+        """Reset the loader-private task sampler.
+
+        Args:
+            seed: Seed applied to the loader-private generator.
+        """
+        self.random_generator = random.Random(seed)
 
     def _index_dataset(self) -> List[str]:
         """Scan the dataset directory and collect image file paths.
@@ -52,11 +65,11 @@ class KolektorSDDLoader:
         """
         if not self.image_paths:
             # Fallback to dummy data if the dataset isn't downloaded yet
-            file_size_bits = random.uniform(1e6, 5e6)  # 1 to 5 Megabits
-            pixels = random.randint(500000, 2000000)
+            file_size_bits = self.random_generator.uniform(1e6, 5e6)  # 1 to 5 Megabits
+            pixels = self.random_generator.randint(500000, 2000000)
         else:
             # Load actual image properties
-            img_path = random.choice(self.image_paths)
+            img_path = self.random_generator.choice(self.image_paths)
             file_size_bytes = os.path.getsize(img_path)
             file_size_bits = file_size_bytes * 8
             
@@ -72,31 +85,33 @@ class KolektorSDDLoader:
         # proportionally based on the real image size and pixel count.
         raw_bits = pixels * 8
         
+        # Parallel stages 2 and 3 use complementary profiles while preserving
+        # their previous combined CPU demand (250 cycles per pixel).
         task_params = {
             "subtask_1": {  # Image Extraction
                 "data_size": file_size_bits,
                 "result_size": raw_bits,
-                "cpu_cycles": pixels * 25,
+                "cpu_cycles": pixels * 50,
             },
             "subtask_2": {  # Image Denoising
                 "data_size": raw_bits,
                 "result_size": raw_bits,
-                "cpu_cycles": pixels * 200,
+                "cpu_cycles": pixels * 50,
             },
             "subtask_3": {  # Standardization
                 "data_size": raw_bits,
-                "result_size": raw_bits * 0.3,
-                "cpu_cycles": pixels * 50,
+                "result_size": raw_bits * 0.2,
+                "cpu_cycles": pixels * 250,
             },
             "subtask_4": {  # Feature Extraction
-                "data_size": raw_bits * 0.6,
+                "data_size": raw_bits * 0.3,
                 "result_size": file_size_bits * 0.1,
-                "cpu_cycles": pixels * 500,
+                "cpu_cycles": pixels * 450,
             },
             "subtask_5": {  # Detection and Recognition
-                "data_size": file_size_bits * 0.03,
+                "data_size": file_size_bits * 0.05,
                 "result_size": 256,
-                "cpu_cycles": pixels * 300,
+                "cpu_cycles": pixels * 250,
             },
         }
         

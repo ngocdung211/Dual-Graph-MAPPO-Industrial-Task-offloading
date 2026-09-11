@@ -20,6 +20,11 @@ def update_maddpg_agents_from_buffer(
     One joint batch and one target-action snapshot are shared by every agent.
     Critics update first, actors update second, and target networks update only
     after all gradient steps complete.
+
+    The policy gradient holds every other agent's action fixed while agent `i`
+    varies. Agents configured with `actor_uses_replay_actions` keep those other
+    actions at the sampled replay actions, which is the published update rule;
+    otherwise they use the other agents' current policy outputs.
     """
     if len(replay_buffer) < batch_size:
         return {
@@ -80,7 +85,12 @@ def update_maddpg_agents_from_buffer(
 
     actor_losses = []
     for agent_index, agent in enumerate(agents):
-        predicted_joint_actions = detached_current_actions.clone()
+        other_agent_actions = (
+            replay_joint_actions
+            if getattr(agent, "actor_uses_replay_actions", False)
+            else detached_current_actions
+        )
+        predicted_joint_actions = other_agent_actions.clone()
         predicted_joint_actions[:, agent_index] = agent.actor(
             state_b[:, agent_index, :]
         )

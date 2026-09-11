@@ -21,13 +21,13 @@ class DITENPlotter2:
             
         # Hardcoded styles to match the distinct lines in the paper's figures
         self.styles = {
-            "MAAC":         {"color": "#1f77b4", "marker": "v"},  # Blue, Triangle Down
+            "Mask MAPPO":         {"color": "#1f77b4", "marker": "v"},  # Blue, Triangle Down
             "MAPPO":        {"color": "#ff7f0e", "marker": "^"},  # Orange, Triangle Up
             "MADDPG":       {"color": "#2ca02c", "marker": "o"},  # Green, Circle
-            "GR-MADDPG":    {"color": "#00ffff", "marker": "s"},  # Cyan, Square
-            "ATN-MADDPG":   {"color": "#800080", "marker": "+"},  # Purple, Plus
+            "Graph-GAT Warmup Mask MAPPO":    {"color": "#00ffff", "marker": "s"},  # Cyan, Square
+            "e-ATN-MADDPG":   {"color": "#800080", "marker": "+"},  # Purple, Plus
             "Graph-GAT Mask MAPPO": {"color": "#d62728", "marker": "*"},   # Red, Star (Proposed)
-            "Graph-GAT Warmup Mask MAPPO": {"color": "#9467bd", "marker": "D"},
+            "Graph-GAT Warmup MAPPO": {"color": "#9467bd", "marker": "D"},
         }
 
     def plot_training_curve(

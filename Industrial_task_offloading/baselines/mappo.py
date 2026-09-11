@@ -9,6 +9,56 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
 
+from utils.rl_advantages import (
+    compute_gae,
+    compute_one_step_td,
+    minibatch_indices,
+    normalize_advantages,
+)
+
+
+def action_mask_from_states(
+    states: torch.Tensor, action_dim: int
+) -> torch.Tensor:
+    """Return valid local/server actions from flat connection windows.
+
+    Args:
+        states: State tensor shaped `(..., state_dim)`. The trailing
+            `2 * num_servers` columns hold connection window starts and ends.
+        action_dim: Number of actions, that is `num_servers + 1`.
+
+    Returns:
+        Boolean mask shaped `(..., action_dim)` where local execution is always
+        valid and a server is valid only while its window is open.
+    """
+    mask = torch.zeros(
+        (*states.shape[:-1], action_dim),
+        dtype=torch.bool,
+        device=states.device,
+    )
+    mask[..., 0] = True
+    num_servers = action_dim - 1
+    if num_servers <= 0:
+        return mask
+
+    window_values = states[..., -2 * num_servers:]
+    window_starts = window_values[..., :num_servers]
+    window_ends = window_values[..., num_servers:]
+    mask[..., 1:] = window_ends > window_starts
+    return mask
+
+
+def masked_action_probabilities(
+    probabilities: torch.Tensor, states: torch.Tensor, action_dim: int
+) -> torch.Tensor:
+    """Zero disconnected server probabilities and renormalize actions."""
+    mask = action_mask_from_states(states, action_dim).to(probabilities.dtype)
+    masked_probabilities = probabilities * mask
+    probability_sum = masked_probabilities.sum(
+        dim=-1, keepdim=True
+    ).clamp_min(1e-8)
+    return masked_probabilities / probability_sum
+
 class CentralizedValueCritic(nn.Module):
     """Evaluate the joint state to estimate the global value V(s)."""
 
@@ -140,6 +190,9 @@ class MAPPOAgent:
         max_grad_norm: float | None = None,
         hidden_dim: int = 64,
         use_action_mask: bool = False,
+        use_gae: bool = False,
+        gae_lambda: float = 0.95,
+        num_minibatches: int = 1,
     ):
         """Initialize the MAPPO agent.
 
@@ -158,6 +211,10 @@ class MAPPOAgent:
             max_grad_norm: Optional actor/critic gradient clipping norm.
             hidden_dim: Actor and critic hidden width.
             use_action_mask: Whether to mask disconnected edge-server actions.
+            use_gae: Use GAE(lambda) instead of one-step TD advantages.
+            gae_lambda: GAE trace decay used when ``use_gae`` is set.
+            num_minibatches: PPO minibatches per epoch. One keeps the
+                historical single full-batch update per epoch.
         """
         self.action_dim = action_dim
         self.gamma = gamma
@@ -167,7 +224,10 @@ class MAPPOAgent:
         self.value_loss_coef = value_loss_coef
         self.max_grad_norm = max_grad_norm
         self.use_action_mask = use_action_mask
-        
+        self.use_gae = use_gae
+        self.gae_lambda = gae_lambda
+        self.num_minibatches = max(1, int(num_minibatches))
+
         self.actor = StochasticActor(state_dim, action_dim, hidden_dim=hidden_dim)
         self.critic = CentralizedValueCritic(
             state_dim, num_agents, hidden_dim=hidden_dim
@@ -222,21 +282,7 @@ class MAPPOAgent:
 
     def _action_mask_from_state(self, state: torch.Tensor) -> torch.Tensor:
         """Return valid local/server actions from flat connection windows."""
-        mask = torch.zeros(
-            self.action_dim,
-            dtype=torch.bool,
-            device=state.device,
-        )
-        mask[0] = True
-        num_servers = self.action_dim - 1
-        if num_servers <= 0:
-            return mask
-
-        window_values = state[-2 * num_servers:]
-        window_starts = window_values[:num_servers]
-        window_ends = window_values[num_servers:]
-        mask[1:] = window_ends > window_starts
-        return mask
+        return action_mask_from_states(state, self.action_dim)
 
     def _masked_action_probabilities(
         self, probabilities: torch.Tensor, state: torch.Tensor
@@ -245,18 +291,9 @@ class MAPPOAgent:
         if not self.use_action_mask:
             return probabilities
 
-        if probabilities.dim() == 1:
-            mask = self._action_mask_from_state(state).float()
-            masked_probabilities = probabilities * mask
-            return masked_probabilities / masked_probabilities.sum().clamp_min(1e-8)
-
-        masks = torch.stack(
-            [self._action_mask_from_state(row_state) for row_state in state],
-            dim=0,
-        ).float()
-        masked_probabilities = probabilities * masks
-        probability_sum = masked_probabilities.sum(dim=1, keepdim=True).clamp_min(1e-8)
-        return masked_probabilities / probability_sum
+        return masked_action_probabilities(
+            probabilities, state, self.action_dim
+        )
 
     def update_agent(
         self,
@@ -291,15 +328,24 @@ class MAPPOAgent:
         
         # 1. Calculate Advantages and Old Log Probs (Detached)
         with torch.no_grad():
-            next_v = self.critic(joint_next_state_b)
-            target_v = agent_rewards + self.gamma * next_v * (1.0 - done_mask)
             current_v = self.critic(joint_state_b)
-            
-            advantages = target_v - current_v
-            advantages = (advantages - advantages.mean()) / (
-                advantages.std(unbiased=False) + 1e-8
-            )
-            
+            if self.use_gae:
+                last_value = self.critic(joint_next_state_b[-1:])
+                advantages, target_v = compute_gae(
+                    agent_rewards,
+                    current_v,
+                    last_value,
+                    done_mask,
+                    self.gamma,
+                    self.gae_lambda,
+                )
+            else:
+                next_v = self.critic(joint_next_state_b)
+                advantages, target_v = compute_one_step_td(
+                    agent_rewards, current_v, next_v, done_mask, self.gamma
+                )
+            advantages = normalize_advantages(advantages)
+
             if old_log_prob_b is None:
                 probs = self.actor(agent_states)
                 distribution = Categorical(probs)
@@ -308,45 +354,57 @@ class MAPPOAgent:
                 old_log_probs = old_log_prob_b[:, agent_index]
             
         # 2. PPO Epochs
+        flat_advantages = advantages.squeeze(-1)
         for _ in range(self.ppo_epochs):
-            probs = self.actor(agent_states)
-            probs = self._masked_action_probabilities(probs, agent_states)
-            distribution = Categorical(probs)
-            log_probs = distribution.log_prob(agent_actions)
-            entropy = distribution.entropy().mean()
-            
-            current_v_epoch = self.critic(joint_state_b)
-            
-            # Calculate the ratio (pi_theta / pi_theta_old)
-            ratios = torch.exp(log_probs - old_log_probs)
-            
-            # Calculate Surrogate Losses
-            surr1 = ratios * advantages.squeeze()
-            surr2 = torch.clamp(ratios, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantages.squeeze()
-            
-            # Actor Loss: Maximize surrogate objective -> minimize negative
-            actor_loss = (
-                -torch.min(surr1, surr2).mean()
-                - self.entropy_coef * entropy
-            )
-            
-            # Critic Loss: Standard MSE
-            critic_loss = F.mse_loss(current_v_epoch, target_v)
-            
-            # Optimize Actor
-            self.actor_optimizer.zero_grad()
-            actor_loss.backward()
-            if self.max_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(
-                    self.actor.parameters(), self.max_grad_norm
+            for batch_indices in minibatch_indices(
+                batch_size, self.num_minibatches, joint_state_b.device
+            ):
+                minibatch_states = agent_states[batch_indices]
+                probs = self.actor(minibatch_states)
+                probs = self._masked_action_probabilities(
+                    probs, minibatch_states
                 )
-            self.actor_optimizer.step()
-            
-            # Optimize Critic
-            self.critic_optimizer.zero_grad()
-            (self.value_loss_coef * critic_loss).backward()
-            if self.max_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(
-                    self.critic.parameters(), self.max_grad_norm
+                distribution = Categorical(probs)
+                log_probs = distribution.log_prob(agent_actions[batch_indices])
+                entropy = distribution.entropy().mean()
+
+                current_v_epoch = self.critic(joint_state_b[batch_indices])
+
+                # Calculate the ratio (pi_theta / pi_theta_old)
+                ratios = torch.exp(log_probs - old_log_probs[batch_indices])
+
+                # Calculate Surrogate Losses
+                minibatch_advantages = flat_advantages[batch_indices]
+                surr1 = ratios * minibatch_advantages
+                surr2 = torch.clamp(
+                    ratios, 1.0 - self.clip_param, 1.0 + self.clip_param
+                ) * minibatch_advantages
+
+                # Actor Loss: Maximize surrogate objective -> minimize negative
+                actor_loss = (
+                    -torch.min(surr1, surr2).mean()
+                    - self.entropy_coef * entropy
                 )
-            self.critic_optimizer.step()
+
+                # Critic Loss: Standard MSE
+                critic_loss = F.mse_loss(
+                    current_v_epoch, target_v[batch_indices]
+                )
+
+                # Optimize Actor
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                if self.max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.actor.parameters(), self.max_grad_norm
+                    )
+                self.actor_optimizer.step()
+
+                # Optimize Critic
+                self.critic_optimizer.zero_grad()
+                (self.value_loss_coef * critic_loss).backward()
+                if self.max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.critic.parameters(), self.max_grad_norm
+                    )
+                self.critic_optimizer.step()

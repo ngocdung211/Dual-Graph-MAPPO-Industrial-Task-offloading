@@ -33,6 +33,8 @@ from run_comparision import (
     train_algorithm,
 )
 from utils.experiment_setup import (
+    TASK_PRIORITY_FEATURE_DIM,
+    build_priorities,
     build_task_priority_model,
     get_priority_checkpoint_path,
     make_priority_dag_sampler,
@@ -65,6 +67,7 @@ class TuningResources:
     data_loader: KolektorSDDLoader
     priority_model: torch.nn.Module
     priority_mode: str
+    fixed_priority_order: List[int]
 
 
 def parse_args() -> argparse.Namespace:
@@ -431,28 +434,34 @@ def load_tuning_resources(
     priority_mode = str(provisional["priority_model"]).lower()
     priority_model = build_task_priority_model(
         priority_mode,
-        num_features=3,
+        num_features=TASK_PRIORITY_FEATURE_DIM,
         hidden_dim=int(confirmed["gcn_hidden_dim"]),
+    )
+    priority_dag_sampler = make_priority_dag_sampler(
+        data_loader,
+        t_max=provisional["t_max"],
+        e_max=provisional["e_max"],
+        cpu_cycle_scale=provisional["task_cpu_cycle_scale"],
     )
     priority_model = load_or_train_priority_model(
         priority_model=priority_model,
-        dag_sampler=make_priority_dag_sampler(
-            data_loader,
-            t_max=provisional["t_max"],
-            e_max=provisional["e_max"],
-            cpu_cycle_scale=provisional["task_cpu_cycle_scale"],
-        ),
+        dag_sampler=priority_dag_sampler,
         checkpoint_path=get_priority_checkpoint_path(priority_mode),
         epochs=int(provisional["gcn_pretrain_epochs"]),
         samples_per_epoch=int(provisional["gcn_samples_per_epoch"]),
         lr=confirmed["gcn_lr"],
         model_label=priority_mode.upper(),
     )
+    priority_template = priority_dag_sampler()
+    fixed_priority_order = build_priorities(
+        {priority_template.id: priority_template}, priority_model
+    )[priority_template.id]
     return TuningResources(
         scenario=scenario,
         data_loader=data_loader,
         priority_model=priority_model,
         priority_mode=priority_mode,
+        fixed_priority_order=fixed_priority_order,
     )
 
 
@@ -636,6 +645,7 @@ def run_seeded_stage(
                 topology_scenario=resources.scenario,
                 topology_metrics=topology_metrics,
                 experiment_seed=train_seed,
+                fixed_priority_order=resources.fixed_priority_order,
                 show_progress=True,
             )
             if checkpoint is None:
@@ -659,6 +669,7 @@ def run_seeded_stage(
                         experiment_seed=validation_seed,
                         priority_mode=resources.priority_mode,
                         topology_scenario=resources.scenario,
+                        fixed_priority_order=resources.fixed_priority_order,
                     )
                 )
             seed_results.append(
@@ -802,6 +813,7 @@ def run_study(
                 topology_scenario=resources.scenario,
                 topology_metrics=topology_metrics,
                 experiment_seed=args.train_seed,
+                fixed_priority_order=resources.fixed_priority_order,
                 episode_callback=report_episode,
                 show_progress=False,
             )
@@ -825,6 +837,7 @@ def run_study(
                         experiment_seed=validation_seed,
                         priority_mode=resources.priority_mode,
                         topology_scenario=resources.scenario,
+                        fixed_priority_order=resources.fixed_priority_order,
                     )
                 )
 

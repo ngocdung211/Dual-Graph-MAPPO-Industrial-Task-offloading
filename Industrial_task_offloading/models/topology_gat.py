@@ -163,6 +163,88 @@ class TopologyGraphAttentionLayer(nn.Module):
         )
         return device_outputs, server_outputs
 
+    def forward_batched_local_one_way(
+        self,
+        device_features: torch.Tensor,
+        server_features: torch.Tensor,
+        server_to_device_edge_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode one-hop server-to-device messages for local actor graphs."""
+        num_devices = device_features.shape[0]
+        projected_devices = self.node_projection(device_features)
+        projected_servers = self.node_projection(server_features)
+        if projected_servers.ndim == 2:
+            projected_servers = projected_servers.unsqueeze(0).expand(
+                num_devices, -1, -1
+            )
+        projected_edges = self.edge_projection(
+            server_to_device_edge_features
+        )
+        device_outputs = self._aggregate_device_messages(
+            projected_devices,
+            projected_servers,
+            projected_edges,
+        )
+        return device_outputs, projected_servers
+
+    def forward_batched_global_one_way(
+        self,
+        device_features: torch.Tensor,
+        server_features: torch.Tensor,
+        server_to_device_edge_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode one-hop server-to-device messages for the global graph."""
+        projected_devices = self.node_projection(device_features)
+        projected_servers = self.node_projection(server_features)
+        projected_edges = self.edge_projection(
+            server_to_device_edge_features
+        )
+        device_outputs = self._aggregate_device_messages(
+            projected_devices,
+            projected_servers.unsqueeze(0).expand(
+                projected_devices.shape[0], -1, -1
+            ),
+            projected_edges,
+        )
+        return device_outputs, projected_servers
+
+    def forward_batched_global_rollout_one_way(
+        self,
+        device_features: torch.Tensor,
+        server_features: torch.Tensor,
+        server_to_device_edge_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode a rollout batch using one-hop server-to-device messages."""
+        num_devices = device_features.shape[1]
+        output_dim = self.node_projection.out_features
+        projected_devices = self.node_projection(device_features)
+        projected_servers = self.node_projection(server_features)
+        projected_edges = self.edge_projection(
+            server_to_device_edge_features
+        )
+
+        server_sources = projected_servers.unsqueeze(1).expand(
+            -1, num_devices, -1, -1
+        )
+        source_embeddings = torch.cat(
+            [server_sources, projected_devices.unsqueeze(2)], dim=2
+        )
+        target_embeddings = projected_devices.unsqueeze(2).expand_as(
+            source_embeddings
+        )
+        self_edges = projected_edges.new_zeros(
+            (*projected_devices.shape[:2], 1, output_dim)
+        )
+        edge_embeddings = torch.cat(
+            [projected_edges, self_edges], dim=2
+        )
+        device_outputs = self._aggregate_rollout_messages(
+            source_embeddings,
+            target_embeddings,
+            edge_embeddings,
+        )
+        return device_outputs, projected_servers
+
     def forward_batched_global_rollout(
         self,
         device_features: torch.Tensor,
@@ -393,6 +475,7 @@ class TopologyGATEncoder(nn.Module):
         edge_feature_dim: int,
         hidden_dim: int = 64,
         embedding_dim: int = 64,
+        single_layer_one_way: bool = False,
     ):
         """Initialize the topology GAT encoder.
 
@@ -401,18 +484,23 @@ class TopologyGATEncoder(nn.Module):
             edge_feature_dim: Input edge feature dimension.
             hidden_dim: Hidden graph-attention dimension.
             embedding_dim: Final device embedding dimension.
+            single_layer_one_way: Use one server-to-device GAT layer and skip
+                the second topology GAT layer.
         """
         super(TopologyGATEncoder, self).__init__()
+        self.single_layer_one_way = single_layer_one_way
         self.gat1 = TopologyGraphAttentionLayer(
             node_feature_dim=node_feature_dim,
             edge_feature_dim=edge_feature_dim,
-            output_dim=hidden_dim,
+            output_dim=(embedding_dim if single_layer_one_way else hidden_dim),
         )
-        self.gat2 = TopologyGraphAttentionLayer(
-            node_feature_dim=hidden_dim,
-            edge_feature_dim=edge_feature_dim,
-            output_dim=embedding_dim,
-        )
+        self.gat2 = None
+        if not single_layer_one_way:
+            self.gat2 = TopologyGraphAttentionLayer(
+                node_feature_dim=hidden_dim,
+                edge_feature_dim=edge_feature_dim,
+                output_dim=embedding_dim,
+            )
 
     def forward(
         self,
@@ -432,8 +520,13 @@ class TopologyGATEncoder(nn.Module):
         Returns:
             Tensor shaped `(num_devices, embedding_dim)`.
         """
-        hidden_nodes = F.elu(self.gat1(node_features, edge_index, edge_features))
-        encoded_nodes = self.gat2(hidden_nodes, edge_index, edge_features)
+        first_layer_nodes = self.gat1(node_features, edge_index, edge_features)
+        if self.gat2 is None:
+            encoded_nodes = first_layer_nodes
+        else:
+            encoded_nodes = self.gat2(
+                F.elu(first_layer_nodes), edge_index, edge_features
+            )
         return encoded_nodes[device_node_indices.to(encoded_nodes.device)]
 
     def forward_batched_local(
@@ -480,6 +573,13 @@ class TopologyGATEncoder(nn.Module):
             server embeddings shaped
             ``(num_devices, num_servers, embedding_dim)``.
         """
+        if self.gat2 is None:
+            return self.gat1.forward_batched_local_one_way(
+                device_features,
+                server_features,
+                backward_edge_features,
+            )
+
         hidden_devices, hidden_servers = self.gat1.forward_batched_local(
             device_features,
             server_features,
@@ -516,6 +616,14 @@ class TopologyGATEncoder(nn.Module):
             Global-context device embeddings shaped
             ``(num_devices, embedding_dim)``.
         """
+        if self.gat2 is None:
+            encoded_devices, _ = self.gat1.forward_batched_global_one_way(
+                device_features,
+                server_features,
+                backward_edge_features,
+            )
+            return encoded_devices
+
         hidden_devices, hidden_servers = self.gat1.forward_batched_global(
             device_features,
             server_features,
@@ -607,6 +715,16 @@ class TopologyGATEncoder(nn.Module):
         backward_edge_features: torch.Tensor,
     ) -> torch.Tensor:
         """Return global-context device embeddings for a rollout time batch."""
+        if self.gat2 is None:
+            encoded_devices, _ = (
+                self.gat1.forward_batched_global_rollout_one_way(
+                    device_features,
+                    server_features,
+                    backward_edge_features,
+                )
+            )
+            return encoded_devices
+
         hidden_devices, hidden_servers = (
             self.gat1.forward_batched_global_rollout(
                 device_features,

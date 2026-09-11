@@ -11,6 +11,12 @@ from torch.distributions import Categorical
 
 from models.topology_gat import TopologyGATEncoder
 from utils.gpu_readiness import resolve_torch_device
+from utils.rl_advantages import (
+    compute_gae,
+    compute_one_step_td,
+    minibatch_indices,
+    normalize_advantages,
+)
 from utils.topology_graph_state import TopologyGraphState
 
 
@@ -203,9 +209,13 @@ class GraphGATMAPPOAgent:
         value_loss_coef: float = 1.0,
         max_grad_norm: Optional[float] = None,
         use_action_mask: bool = True,
+        use_gae: bool = False,
+        gae_lambda: float = 0.95,
+        num_minibatches: int = 1,
         topology_warmup_episodes: int = 0,
         topology_warmup_updates_per_step: int = 0,
         topology_warmup_lr: float = 0.001,
+        lightweight_topology: bool = False,
         device: str = "cpu",
     ):
         """Initialize Graph-GAT MAPPO.
@@ -231,9 +241,15 @@ class GraphGATMAPPOAgent:
             value_loss_coef: Critic loss coefficient in the joint PPO loss.
             max_grad_norm: Optional maximum PPO gradient norm.
             use_action_mask: Whether to mask disconnected edge-server actions.
+            use_gae: Use GAE(lambda) instead of one-step TD advantages.
+            gae_lambda: GAE trace decay used when ``use_gae`` is set.
+            num_minibatches: PPO minibatches per epoch. One keeps the
+                historical single full-batch update per epoch.
             topology_warmup_episodes: Number of first episodes using online GAT warmup.
             topology_warmup_updates_per_step: Auxiliary GAT updates before action selection.
             topology_warmup_lr: Learning rate for topology warmup optimizer.
+            lightweight_topology: Use one server-to-device edge per pair,
+                three edge features, and one topology GAT layer.
             device: PyTorch device request: ``cpu``, ``cuda``, ``cuda:<index>``,
                 or ``auto``.
         """
@@ -247,8 +263,14 @@ class GraphGATMAPPOAgent:
         self.value_loss_coef = value_loss_coef
         self.max_grad_norm = max_grad_norm
         self.use_action_mask = use_action_mask
+        self.use_gae = use_gae
+        self.gae_lambda = gae_lambda
+        self.num_minibatches = max(1, int(num_minibatches))
         self.topology_warmup_episodes = topology_warmup_episodes
         self.topology_warmup_updates_per_step = topology_warmup_updates_per_step
+        self.lightweight_topology = lightweight_topology
+        self.connected_feature_index = 0 if lightweight_topology else 2
+        self.window_length_feature_index = 2 if lightweight_topology else 6
         self.device = resolve_torch_device(device)
 
         self.encoder = TopologyGATEncoder(
@@ -256,6 +278,7 @@ class GraphGATMAPPOAgent:
             edge_feature_dim=edge_feature_dim,
             hidden_dim=hidden_dim,
             embedding_dim=embedding_dim,
+            single_layer_one_way=lightweight_topology,
         )
         self.actor = GraphGATActor(
             embedding_dim=embedding_dim,
@@ -353,39 +376,62 @@ class GraphGATMAPPOAgent:
         graph_states = [transition.graph_state for transition in transitions]
         next_graph_states = [transition.next_graph_state for transition in transitions]
 
+        stacked_features = self._stack_graph_features(graph_states)
+        batch_size = len(transitions)
+
         with torch.no_grad():
-            current_values = self._values_for_graphs(graph_states)
-            next_values = self._values_for_graphs(next_graph_states)
-            target_values = team_rewards + self.gamma * next_values * (1.0 - dones)
-            advantages = target_values - current_values
-            advantages = (advantages - advantages.mean()) / (
-                advantages.std(unbiased=False) + 1e-8
-            )
+            current_values = self._values_from_stacked(*stacked_features)
+            if self.use_gae:
+                last_value = self._values_from_stacked(
+                    *self._stack_graph_features(next_graph_states[-1:])
+                )
+                advantages, target_values = compute_gae(
+                    team_rewards,
+                    current_values,
+                    last_value,
+                    dones,
+                    self.gamma,
+                    self.gae_lambda,
+                )
+            else:
+                next_values = self._values_from_stacked(
+                    *self._stack_graph_features(next_graph_states)
+                )
+                advantages, target_values = compute_one_step_td(
+                    team_rewards, current_values, next_values, dones, self.gamma
+                )
+            advantages = normalize_advantages(advantages)
 
         for _ in range(self.ppo_epochs):
-            log_probs, entropy, values = self._policy_and_values_for_graphs(
-                graph_states, actions
-            )
-
-            ratios = torch.exp(log_probs - old_log_probs)
-            expanded_advantages = advantages.expand_as(ratios)
-            unclipped = ratios * expanded_advantages
-            clipped = torch.clamp(
-                ratios, 1.0 - self.clip_param, 1.0 + self.clip_param
-            ) * expanded_advantages
-            actor_loss = (
-                -torch.min(unclipped, clipped).mean()
-                - self.entropy_coef * entropy
-            )
-            critic_loss = F.mse_loss(values, target_values)
-
-            self.optimizer.zero_grad()
-            (actor_loss + self.value_loss_coef * critic_loss).backward()
-            if self.max_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(
-                    self.ppo_parameters, self.max_grad_norm
+            for batch_indices in minibatch_indices(
+                batch_size, self.num_minibatches, self.device
+            ):
+                minibatch_features = tuple(
+                    feature[batch_indices] for feature in stacked_features
                 )
-            self.optimizer.step()
+                log_probs, entropy, values = self._policy_and_values_from_stacked(
+                    *minibatch_features, actions[batch_indices]
+                )
+
+                ratios = torch.exp(log_probs - old_log_probs[batch_indices])
+                expanded_advantages = advantages[batch_indices].expand_as(ratios)
+                unclipped = ratios * expanded_advantages
+                clipped = torch.clamp(
+                    ratios, 1.0 - self.clip_param, 1.0 + self.clip_param
+                ) * expanded_advantages
+                actor_loss = (
+                    -torch.min(unclipped, clipped).mean()
+                    - self.entropy_coef * entropy
+                )
+                critic_loss = F.mse_loss(values, target_values[batch_indices])
+
+                self.optimizer.zero_grad()
+                (actor_loss + self.value_loss_coef * critic_loss).backward()
+                if self.max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.ppo_parameters, self.max_grad_norm
+                    )
+                self.optimizer.step()
 
         rollout_buffer.clear()
 
@@ -397,12 +443,14 @@ class GraphGATMAPPOAgent:
         server_features = self._selected_node_features(
             graph_state, graph_state.server_node_indices
         )
-        edge_features = self._device_server_edge_features(graph_state).to(self.device)
+        forward_edge_features, backward_edge_features = (
+            self._encoder_edge_features(graph_state)
+        )
         return self.encoder.forward_batched_global(
             device_features=device_features,
             server_features=server_features,
-            forward_edge_features=edge_features[:, :, 0, :],
-            backward_edge_features=edge_features[:, :, 1, :],
+            forward_edge_features=forward_edge_features,
+            backward_edge_features=backward_edge_features,
         )
 
     def should_warmup_topology(self, episode_index: int) -> bool:
@@ -446,10 +494,11 @@ class GraphGATMAPPOAgent:
         self, graph_state: TopologyGraphState
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Build feasible-link and window-length labels from graph edges."""
-        forward_edge_features = self._device_server_edge_features(
-            graph_state
-        ).to(self.device)[:, :, 0, :]
-        return forward_edge_features[:, :, 2], forward_edge_features[:, :, 6]
+        forward_edge_features, _ = self._encoder_edge_features(graph_state)
+        return (
+            forward_edge_features[:, :, self.connected_feature_index],
+            forward_edge_features[:, :, self.window_length_feature_index],
+        )
 
     def _actor_probabilities_for_graph_state(
         self, graph_state: TopologyGraphState
@@ -458,9 +507,7 @@ class GraphGATMAPPOAgent:
         device_embeddings, server_embeddings = (
             self._encode_local_actor_nodes(graph_state)
         )
-        forward_edge_features = self._device_server_edge_features(
-            graph_state
-        ).to(self.device)[:, :, 0, :]
+        forward_edge_features, _ = self._encoder_edge_features(graph_state)
         probabilities = self.actor(
             device_embeddings,
             server_embeddings,
@@ -485,12 +532,14 @@ class GraphGATMAPPOAgent:
         server_features = self._selected_node_features(
             graph_state, graph_state.server_node_indices
         )
-        edge_features = self._device_server_edge_features(graph_state).to(self.device)
+        forward_edge_features, backward_edge_features = (
+            self._encoder_edge_features(graph_state)
+        )
         return self.encoder.forward_batched_local_nodes(
             device_features=device_features,
             server_features=server_features,
-            forward_edge_features=edge_features[:, :, 0, :],
-            backward_edge_features=edge_features[:, :, 1, :],
+            forward_edge_features=forward_edge_features,
+            backward_edge_features=backward_edge_features,
         )
 
     def _selected_node_features(
@@ -506,19 +555,32 @@ class GraphGATMAPPOAgent:
     def _device_server_edge_features(
         self, graph_state: TopologyGraphState
     ) -> torch.Tensor:
-        """Return ordered bidirectional link features shaped ``(N, S, 2, E)``."""
-        expected_edge_count = 2 * self.num_devices * self.num_servers
+        """Return ordered link features shaped ``(N, S, directions, E)``."""
+        direction_count = 1 if self.lightweight_topology else 2
+        expected_edge_count = direction_count * self.num_devices * self.num_servers
         if graph_state.edge_features.shape[0] != expected_edge_count:
             raise ValueError(
-                "topology graph must contain two directed edges per "
-                "device-server pair"
+                "topology graph edge count does not match the configured "
+                "directions per device-server pair"
             )
         return graph_state.edge_features.reshape(
             self.num_devices,
             self.num_servers,
-            2,
+            direction_count,
             graph_state.edge_features.shape[-1],
         )
+
+    def _encoder_edge_features(
+        self, graph_state: TopologyGraphState
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return actor-facing and server-to-device encoder edge tensors."""
+        pair_features = self._device_server_edge_features(graph_state).to(
+            self.device
+        )
+        forward_edge_features = pair_features[:, :, 0, :]
+        if self.lightweight_topology:
+            return forward_edge_features, forward_edge_features
+        return forward_edge_features, pair_features[:, :, 1, :]
 
     def _local_subgraph_for_device(
         self, graph_state: TopologyGraphState, device_index: int
@@ -588,10 +650,10 @@ class GraphGATMAPPOAgent:
             device=self.device,
         )
         mask[:, 0] = True
-        forward_edge_features = self._device_server_edge_features(
-            graph_state
-        ).to(self.device)[:, :, 0, :]
-        mask[:, 1:] = forward_edge_features[:, :, 2] > 0.5
+        forward_edge_features, _ = self._encoder_edge_features(graph_state)
+        mask[:, 1:] = (
+            forward_edge_features[:, :, self.connected_feature_index] > 0.5
+        )
         return mask
 
     def _masked_action_probabilities(
@@ -601,9 +663,7 @@ class GraphGATMAPPOAgent:
         if not self.use_action_mask:
             return probabilities
 
-        forward_edge_features = self._device_server_edge_features(
-            graph_state
-        ).to(self.device)[:, :, 0, :]
+        forward_edge_features, _ = self._encoder_edge_features(graph_state)
         return self._masked_action_probabilities_for_edges(
             probabilities, forward_edge_features
         )
@@ -619,7 +679,9 @@ class GraphGATMAPPOAgent:
 
         action_mask = torch.zeros_like(probabilities, dtype=torch.bool)
         action_mask[..., 0] = True
-        action_mask[..., 1:] = forward_edge_features[..., 2] > 0.5
+        action_mask[..., 1:] = (
+            forward_edge_features[..., self.connected_feature_index] > 0.2
+        )
         masked_probabilities = probabilities * action_mask.float()
         probability_sum = masked_probabilities.sum(
             dim=-1, keepdim=True
@@ -642,29 +704,39 @@ class GraphGATMAPPOAgent:
                 for graph_state in graph_states
             ]
         )
-        edge_features = torch.stack(
-            [
-                self._device_server_edge_features(graph_state)
-                for graph_state in graph_states
-            ]
+        directed_edge_features = [
+            self._encoder_edge_features(graph_state)
+            for graph_state in graph_states
+        ]
+        forward_edge_features = torch.stack(
+            [edge_pair[0] for edge_pair in directed_edge_features]
+        )
+        backward_edge_features = torch.stack(
+            [edge_pair[1] for edge_pair in directed_edge_features]
         )
         return (
             device_features.to(self.device),
             server_features.to(self.device),
-            edge_features[:, :, :, 0, :].to(self.device),
-            edge_features[:, :, :, 1, :].to(self.device),
+            forward_edge_features.to(self.device),
+            backward_edge_features.to(self.device),
         )
 
     def _values_for_graphs(
         self, graph_states: List[TopologyGraphState]
     ) -> torch.Tensor:
         """Return centralized values for a batch of graph states."""
-        (
-            device_features,
-            server_features,
-            forward_edge_features,
-            backward_edge_features,
-        ) = self._stack_graph_features(graph_states)
+        return self._values_from_stacked(
+            *self._stack_graph_features(graph_states)
+        )
+
+    def _values_from_stacked(
+        self,
+        device_features: torch.Tensor,
+        server_features: torch.Tensor,
+        forward_edge_features: torch.Tensor,
+        backward_edge_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return centralized values for pre-stacked rollout features."""
         device_embeddings = self.encoder.forward_batched_global_rollout(
             device_features,
             server_features,
@@ -679,13 +751,20 @@ class GraphGATMAPPOAgent:
         actions: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return batched rollout action log-probabilities and values."""
+        return self._policy_and_values_from_stacked(
+            *self._stack_graph_features(graph_states), actions
+        )
+
+    def _policy_and_values_from_stacked(
+        self,
+        device_features: torch.Tensor,
+        server_features: torch.Tensor,
+        forward_edge_features: torch.Tensor,
+        backward_edge_features: torch.Tensor,
+        actions: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return log-probabilities, entropy, and values for stacked features."""
         actions = actions.to(self.device)
-        (
-            device_features,
-            server_features,
-            forward_edge_features,
-            backward_edge_features,
-        ) = self._stack_graph_features(graph_states)
         device_embeddings, server_embeddings = (
             self.encoder.forward_batched_local_rollout_nodes(
                 device_features,

@@ -63,6 +63,20 @@ class NetworkEnvironment:
 
     # --- COMPUTATION MODEL ---
 
+    @staticmethod
+    def _realized_computation(
+        cpu_cycles: float, f_est: float, f_actual: float
+    ) -> Tuple[float, float]:
+        """Return realized delay and reconstructed physical compute power."""
+        estimated_power = max(f_est, 1e-9)
+        compute_deviation = estimated_power - f_actual
+        physical_power = max(1e-9, estimated_power - compute_deviation)
+        estimated_delay = cpu_cycles / estimated_power
+        delay_deviation = (
+            cpu_cycles * compute_deviation / (estimated_power * physical_power)
+        )
+        return estimated_delay + delay_deviation, physical_power
+
     def calculate_local_computation(
         self, cpu_cycles: float, energy_coeff: float, f_est: float, f_actual: float
     ) -> Tuple[float, float]:
@@ -77,12 +91,11 @@ class NetworkEnvironment:
         Returns:
             Tuple of (actual_delay, energy_consumption).
         """
-        del f_est
-        actual_delay = cpu_cycles / f_actual
-        
-        # Energy consumption of local computation
-        energy_consumption = energy_coeff * cpu_cycles * (f_actual ** 2)
-        
+        actual_delay, physical_power = self._realized_computation(
+            cpu_cycles, f_est, f_actual
+        )
+        energy_consumption = energy_coeff * cpu_cycles * (physical_power ** 2)
+
         return actual_delay, energy_consumption
 
     def calculate_edge_computation(
@@ -99,10 +112,12 @@ class NetworkEnvironment:
         Returns:
             Tuple of (actual_delay, energy_consumption).
         """
-        del f_est
-        actual_delay = cpu_cycles / f_actual
-        
-        # Edge-server computation energy is intentionally outside the objective.
+        actual_delay, _ = self._realized_computation(
+            cpu_cycles, f_est, f_actual
+        )
+        # Temporarily exclude edge-server computation energy from the
+        # device-side offloading objective. Transmission energy is accounted
+        # for separately by DITENEnv.
         del energy_coeff
         energy_consumption = 0.0
         return actual_delay, energy_consumption

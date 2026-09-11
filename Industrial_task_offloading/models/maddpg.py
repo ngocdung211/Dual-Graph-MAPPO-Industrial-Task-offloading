@@ -156,6 +156,8 @@ class EpsilonATNMADDPGAgent:
         exploration_fraction: float = 0.4,
         use_attention: bool = True,
         use_epsilon_greedy: bool = True,
+        epsilon_schedule: str = "linear_progress",
+        actor_uses_replay_actions: bool = False,
     ):
         """Initialize the agent.
 
@@ -178,7 +180,22 @@ class EpsilonATNMADDPGAgent:
                 epsilon from its initial to final value.
             use_attention: Whether to use attention in the critic.
             use_epsilon_greedy: Enable epsilon-greedy exploration.
+            epsilon_schedule: ``linear_progress`` decays epsilon linearly over
+                ``exploration_fraction`` of training. ``paper_decay`` follows
+                the published rule ``epsilon = max(epsilon * decay,
+                epsilon_min)`` applied once per episode.
+            actor_uses_replay_actions: Evaluate the policy gradient with the
+                other agents' actions taken from the replay sample, as in the
+                published update rule. When false, the other agents' current
+                policy outputs are used instead.
+
+        Raises:
+            ValueError: If the schedule name or exploration fraction is invalid.
         """
+        if epsilon_schedule not in ("linear_progress", "paper_decay"):
+            raise ValueError(
+                "epsilon_schedule must be 'linear_progress' or 'paper_decay'"
+            )
         if not 0.0 < exploration_fraction <= 1.0:
             raise ValueError("exploration_fraction must be in (0, 1]")
         self.action_dim = action_dim
@@ -227,6 +244,8 @@ class EpsilonATNMADDPGAgent:
             raise ValueError("epsilon_final must be between 0 and epsilon_init")
         self.exploration_fraction = exploration_fraction
         self.decay = decay
+        self.epsilon_schedule = epsilon_schedule
+        self.actor_uses_replay_actions = actor_uses_replay_actions
 
     def select_action(self, state: torch.Tensor) -> int:
         """Select an action using epsilon-greedy strategy.
@@ -254,8 +273,23 @@ class EpsilonATNMADDPGAgent:
     def set_training_progress(
         self, completed_episodes: int, total_episodes: int
     ) -> None:
-        """Set epsilon from normalized training progress."""
+        """Set epsilon for the episode about to start.
+
+        Both schedules are computed from the episode index rather than by
+        mutating the current value, so repeated calls for the same episode are
+        idempotent.
+
+        Args:
+            completed_episodes: Number of episodes already finished.
+            total_episodes: Total planned training episodes.
+        """
         if not self.use_epsilon_greedy:
+            return
+        if self.epsilon_schedule == "paper_decay":
+            self.epsilon = max(
+                self.epsilon_init * self.decay**completed_episodes,
+                self.epsilon_min,
+            )
             return
         training_progress = completed_episodes / max(total_episodes, 1)
         decay_progress = min(

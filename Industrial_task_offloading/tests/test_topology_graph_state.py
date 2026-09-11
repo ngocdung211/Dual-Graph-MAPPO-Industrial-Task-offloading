@@ -115,6 +115,36 @@ def test_topology_graph_state_flags_disconnected_links() -> None:
     assert edge_features[(3, 1)] == pytest.approx([0.0, 1.0, 1.0, 0.0, 0.25, 0.75, 0.5])
 
 
+def test_lightweight_topology_graph_uses_one_compact_edge_per_pair() -> None:
+    """Lightweight graphs should keep only server-to-device compact edges."""
+    graph_state = build_topology_graph_state(
+        _make_joint_state(),
+        num_devices=2,
+        num_servers=2,
+        lightweight=True,
+    )
+
+    assert graph_state.node_features.shape == (4, 14)
+    assert graph_state.edge_index.shape == (2, 4)
+    assert graph_state.edge_features.shape == (4, 3)
+    assert graph_state.edge_index.tolist() == [
+        [2, 3, 2, 3],
+        [0, 0, 1, 1],
+    ]
+    assert torch.allclose(
+        graph_state.edge_features,
+        torch.tensor(
+            [
+                [1.0, 0.0, 0.8],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.25, 0.5],
+            ],
+            dtype=torch.float32,
+        ),
+    )
+
+
 def test_topology_graph_state_rejects_incompatible_flat_state_shape() -> None:
     """Invalid flat state widths should fail before graph construction."""
     bad_state = torch.zeros((2, 12), dtype=torch.float32)

@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("results/analysis/large_1000ep_seeds_75_175_190"),
+        default=Path("results/analysis/final_ladder_3008"),
     )
     parser.add_argument("--smooth-window", type=int, default=20)
     return parser.parse_args()
@@ -123,7 +123,7 @@ def load_histories(
             or model not in MODELS
             or config.get("topology_scenario") != TOPOLOGY
             or config.get("episodes") != EXPECTED_EPISODES
-            or group != f"penalty_0_5_best_1000ep_seed{seed}"
+            or group != f"final_ladder_s{seed}"
         ):
             continue
         episodes = sorted(int(row["episode"]) for row in rows)

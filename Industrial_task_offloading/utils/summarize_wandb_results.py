@@ -82,6 +82,18 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Directory for exported histories and summaries.",
     )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=list(DEFAULT_MODELS),
+        help="Exact model names expected in the group, in report order.",
+    )
+    parser.add_argument(
+        "--topologies",
+        nargs="+",
+        default=list(DEFAULT_TOPOLOGIES),
+        help="Exact topology scenario names expected, in report order.",
+    )
     return parser.parse_args()
 
 
@@ -150,6 +162,55 @@ def normalize_history_row(
     return row
 
 
+def run_episodes_are_complete(
+    rows: Sequence[Mapping[str, object]], expected_episodes: int
+) -> bool:
+    """Return whether rows hold one complete, unique 1..N episode sequence."""
+    episodes = sorted(int(row["episode"]) for row in rows)
+    return episodes == list(range(1, expected_episodes + 1))
+
+
+def select_complete_run(
+    candidate_runs: Sequence[Sequence[Mapping[str, object]]],
+    combination: tuple,
+    expected_episodes: int,
+) -> List[Dict[str, object]]:
+    """Return the single complete run for one topology/model combination.
+
+    Interrupted or resumed W&B runs leave partial histories next to the
+    finished one. Those are reported and skipped; two complete runs remain an
+    error because the intended run would then be ambiguous.
+
+    Args:
+        candidate_runs: Row lists for every run matching the combination.
+        combination: The `(topology, model)` pair being resolved.
+        expected_episodes: Required number of logged episodes.
+
+    Returns:
+        Rows of the one complete run.
+
+    Raises:
+        ValueError: If no run or more than one run is complete.
+    """
+    complete_runs = [
+        rows
+        for rows in candidate_runs
+        if run_episodes_are_complete(rows, expected_episodes)
+    ]
+    skipped = len(candidate_runs) - len(complete_runs)
+    if skipped:
+        print(
+            f"skipped {skipped} incomplete run(s) for {combination}: "
+            f"{[len(rows) for rows in candidate_runs if rows not in complete_runs]}"
+            f" of {expected_episodes} episodes"
+        )
+    if not complete_runs:
+        validate_run_episodes(candidate_runs[0], expected_episodes)
+    if len(complete_runs) > 1:
+        raise ValueError(f"duplicate complete W&B run for {combination}")
+    return list(complete_runs[0])
+
+
 def validate_run_episodes(
     rows: Sequence[Mapping[str, object]], expected_episodes: int
 ) -> None:
@@ -173,6 +234,8 @@ def fetch_api_histories(
     group: str,
     seed: int,
     expected_episodes: int,
+    models: Sequence[str] = DEFAULT_MODELS,
+    topologies: Sequence[str] = DEFAULT_TOPOLOGIES,
 ) -> List[Dict[str, object]]:
     """Fetch and validate all runs in one W&B comparison group."""
     import wandb
@@ -189,7 +252,7 @@ def fetch_api_histories(
             continue
         model = str(config.get("algorithm", ""))
         topology = str(config.get("topology_scenario", ""))
-        if model not in DEFAULT_MODELS or topology not in DEFAULT_TOPOLOGIES:
+        if model not in models or topology not in topologies:
             continue
         combination = (topology, model)
         if combination in seen_combinations:
@@ -216,9 +279,7 @@ def fetch_api_histories(
         seen_combinations.add(combination)
 
     expected_combinations = {
-        (topology, model)
-        for topology in DEFAULT_TOPOLOGIES
-        for model in DEFAULT_MODELS
+        (topology, model) for topology in topologies for model in models
     }
     missing_combinations = sorted(expected_combinations - seen_combinations)
     if missing_combinations:
@@ -226,8 +287,8 @@ def fetch_api_histories(
     return sorted(
         rows,
         key=lambda row: (
-            DEFAULT_TOPOLOGIES.index(str(row["topology"])),
-            DEFAULT_MODELS.index(str(row["model"])),
+            list(topologies).index(str(row["topology"])),
+            list(models).index(str(row["model"])),
             int(row["episode"]),
         ),
     )
@@ -259,6 +320,8 @@ def _read_local_run(
     project_path: str,
     group: str,
     seed: int,
+    models: Sequence[str],
+    topologies: Sequence[str],
 ) -> tuple[tuple[str, str] | None, List[Dict[str, object]]]:
     """Read one matching local W&B run, returning its key and history rows."""
     from wandb.proto import wandb_internal_pb2
@@ -287,7 +350,7 @@ def _read_local_run(
                 return None, []
             model = str(run_config.get("algorithm", ""))
             topology = str(run_config.get("topology_scenario", ""))
-            if model not in DEFAULT_MODELS or topology not in DEFAULT_TOPOLOGIES:
+            if model not in models or topology not in topologies:
                 return None, []
             run_id = record.run.run_id
             run_url = f"https://wandb.ai/{project_path}/runs/{run_id}"
@@ -316,38 +379,41 @@ def fetch_local_histories(
     group: str,
     seed: int,
     expected_episodes: int,
+    models: Sequence[str] = DEFAULT_MODELS,
+    topologies: Sequence[str] = DEFAULT_TOPOLOGIES,
 ) -> List[Dict[str, object]]:
     """Read and validate histories from local W&B binary run files."""
-    rows: List[Dict[str, object]] = []
-    seen_combinations = set()
+    candidates: Dict[tuple, List[List[Dict[str, object]]]] = defaultdict(list)
     for wandb_path in sorted(wandb_dir.glob("run-*/run-*.wandb")):
         combination, run_rows = _read_local_run(
             wandb_path,
             project_path=project_path,
             group=group,
             seed=seed,
+            models=models,
+            topologies=topologies,
         )
         if combination is None:
             continue
-        if combination in seen_combinations:
-            raise ValueError(f"duplicate local W&B run for {combination}")
-        validate_run_episodes(run_rows, expected_episodes)
-        rows.extend(run_rows)
-        seen_combinations.add(combination)
+        candidates[combination].append(run_rows)
+
+    rows: List[Dict[str, object]] = []
+    for combination, candidate_runs in candidates.items():
+        rows.extend(
+            select_complete_run(candidate_runs, combination, expected_episodes)
+        )
 
     expected_combinations = {
-        (topology, model)
-        for topology in DEFAULT_TOPOLOGIES
-        for model in DEFAULT_MODELS
+        (topology, model) for topology in topologies for model in models
     }
-    missing_combinations = sorted(expected_combinations - seen_combinations)
+    missing_combinations = sorted(expected_combinations - set(candidates))
     if missing_combinations:
         raise ValueError(f"missing local W&B runs: {missing_combinations}")
     return sorted(
         rows,
         key=lambda row: (
-            DEFAULT_TOPOLOGIES.index(str(row["topology"])),
-            DEFAULT_MODELS.index(str(row["model"])),
+            list(topologies).index(str(row["topology"])),
+            list(models).index(str(row["model"])),
             int(row["episode"]),
         ),
     )
@@ -364,7 +430,10 @@ def _population_std(values: Sequence[float]) -> float:
 
 
 def summarize_rows(
-    rows: Sequence[Mapping[str, object]], window_name: str
+    rows: Sequence[Mapping[str, object]],
+    window_name: str,
+    models: Sequence[str] = DEFAULT_MODELS,
+    topologies: Sequence[str] = DEFAULT_TOPOLOGIES,
 ) -> List[Dict[str, object]]:
     """Aggregate episode histories by topology and model."""
     grouped: Dict[tuple[str, str], List[Mapping[str, object]]] = defaultdict(list)
@@ -372,8 +441,8 @@ def summarize_rows(
         grouped[(str(row["topology"]), str(row["model"]))].append(row)
 
     summary_rows = []
-    for topology in DEFAULT_TOPOLOGIES:
-        for model in DEFAULT_MODELS:
+    for topology in topologies:
+        for model in models:
             group_rows = grouped[(topology, model)]
             if not group_rows:
                 continue
@@ -438,15 +507,20 @@ def summarize_rows(
 
 
 def build_summaries(
-    rows: Sequence[Mapping[str, object]], final_window: int
+    rows: Sequence[Mapping[str, object]],
+    final_window: int,
+    models: Sequence[str] = DEFAULT_MODELS,
+    topologies: Sequence[str] = DEFAULT_TOPOLOGIES,
 ) -> List[Dict[str, object]]:
     """Return all-episode and final-window summary rows."""
     max_episode = max(int(row["episode"]) for row in rows)
     final_rows = [
         row for row in rows if int(row["episode"]) > max_episode - final_window
     ]
-    return summarize_rows(rows, "all_episodes") + summarize_rows(
-        final_rows, f"final_{final_window}"
+    return summarize_rows(
+        rows, "all_episodes", models, topologies
+    ) + summarize_rows(
+        final_rows, f"final_{final_window}", models, topologies
     )
 
 
@@ -575,6 +649,8 @@ def main() -> None:
             group=args.group,
             seed=args.seed,
             expected_episodes=args.expected_episodes,
+            models=args.models,
+            topologies=args.topologies,
         )
     else:
         history_rows = fetch_api_histories(
@@ -582,8 +658,12 @@ def main() -> None:
             group=args.group,
             seed=args.seed,
             expected_episodes=args.expected_episodes,
+            models=args.models,
+            topologies=args.topologies,
         )
-    summary_rows = build_summaries(history_rows, args.final_window)
+    summary_rows = build_summaries(
+        history_rows, args.final_window, args.models, args.topologies
+    )
     write_outputs(args.output_dir, history_rows, summary_rows)
     print(
         f"Exported {len(history_rows)} episode rows and "

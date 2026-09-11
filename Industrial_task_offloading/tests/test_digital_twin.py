@@ -114,3 +114,26 @@ def test_environment_uses_synchronized_twin_estimates() -> None:
     assert env.server_estimated_power[1] == pytest.approx(
         snapshot.server_states[1].estimated_compute_power
     )
+
+
+def test_realized_compute_uses_estimate_minus_deviation() -> None:
+    """Physical delay and energy should use f_actual = f_est - delta_f."""
+    network = NetworkEnvironment(bandwidth=10e6, noise_power_dbm=-43)
+    cpu_cycles = 2e9
+    estimated_power = 1.2e9
+    actual_power = 1.0e9
+
+    delay, energy = network.calculate_local_computation(
+        cpu_cycles=cpu_cycles,
+        energy_coeff=1e-28,
+        f_est=estimated_power,
+        f_actual=actual_power,
+    )
+
+    compute_deviation = estimated_power - actual_power
+    reconstructed_power = estimated_power - compute_deviation
+    assert reconstructed_power == pytest.approx(actual_power)
+    assert delay == pytest.approx(cpu_cycles / actual_power)
+    assert energy == pytest.approx(
+        1e-28 * cpu_cycles * reconstructed_power ** 2
+    )

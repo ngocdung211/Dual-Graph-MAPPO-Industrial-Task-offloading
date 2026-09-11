@@ -78,6 +78,16 @@ def _compute_cumulative_successor_cpu(task_dag: TaskDAG) -> Dict[int, float]:
         dfs(sid)
     return memo
 
+
+def _minmax_normalize_column(values: np.ndarray) -> np.ndarray:
+    """Normalize one task-feature column into the range [0, 1]."""
+    value_min = float(np.min(values))
+    value_max = float(np.max(values))
+    if value_max - value_min < 1e-9:
+        return np.zeros_like(values)
+    return (values - value_min) / (value_max - value_min)
+
+
 def extract_task_graph_inputs(task_dag: TaskDAG) -> Tuple[torch.Tensor, torch.Tensor]:
     """Extract adjacency and feature matrices for task-priority graph models.
 
@@ -89,7 +99,7 @@ def extract_task_graph_inputs(task_dag: TaskDAG) -> Tuple[torch.Tensor, torch.Te
     """
     num_nodes = len(task_dag.subtasks)
     adjacency = np.zeros((num_nodes, num_nodes), dtype=np.float32)
-    features = np.zeros((num_nodes, 3), dtype=np.float32)
+    features = np.zeros((num_nodes, 6), dtype=np.float32)
 
     # 1. Xây dựng ma trận kề A dựa trên dependencies (edges)
     for pred, succ in task_dag.edges:
@@ -104,9 +114,17 @@ def extract_task_graph_inputs(task_dag: TaskDAG) -> Tuple[torch.Tensor, torch.Te
         # Out-degree: Số lượng subtask con phụ thuộc trực tiếp vào nó
         out_degree = sum(1 for p, s in task_dag.edges if p == sub_id)
 
-        # 3 paper-aligned input features: hierarchy level, out-degree, successor cumulative compute volume.
+        # Structural features followed by the current subtask workload features.
         features[idx, 0] = float(hierarchy_levels[sub_id])
         features[idx, 1] = float(out_degree)
-        features[idx, 2] = cumulative_successor_cpu[sub_id] / 1e6
+        features[idx, 2] = cumulative_successor_cpu[sub_id]
+        features[idx, 3] = float(subtask.cpu_cycles)
+        features[idx, 4] = float(subtask.data_size)
+        features[idx, 5] = float(subtask.result_size)
+
+    for feature_index in range(features.shape[1]):
+        features[:, feature_index] = _minmax_normalize_column(
+            features[:, feature_index]
+        )
 
     return torch.FloatTensor(features), torch.FloatTensor(adjacency)

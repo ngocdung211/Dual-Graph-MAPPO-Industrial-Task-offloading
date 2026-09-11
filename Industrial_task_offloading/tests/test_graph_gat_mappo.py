@@ -76,6 +76,16 @@ def _make_graph_state(offset: float = 0.0):
     )
 
 
+def _make_lightweight_graph_state(offset: float = 0.0):
+    """Create a one-way, three-edge-feature topology graph fixture."""
+    return build_topology_graph_state(
+        _make_joint_state(offset),
+        num_devices=2,
+        num_servers=2,
+        lightweight=True,
+    )
+
+
 def _clone_module_parameters(module: torch.nn.Module):
     """Return detached copies of module parameters."""
     return [parameter.detach().clone() for parameter in module.parameters()]
@@ -339,6 +349,30 @@ def test_graph_gat_topology_warmup_updates_encoder_parameters() -> None:
     assert _parameters_changed(encoder_before, _clone_module_parameters(agent.encoder))
 
 
+def test_lightweight_graph_gat_runs_one_layer_warmup_and_policy() -> None:
+    """Lightweight Graph-GAT should use one layer and compact edge features."""
+    torch.manual_seed(46)
+    agent = GraphGATMAPPOAgent(
+        num_devices=2,
+        num_servers=2,
+        node_feature_dim=14,
+        edge_feature_dim=3,
+        embedding_dim=8,
+        lightweight_topology=True,
+        topology_warmup_lr=0.01,
+    )
+    graph_state = _make_lightweight_graph_state()
+
+    actions, log_probs = agent.select_actions_with_log_probs(graph_state)
+    warmup_loss = agent.warmup_topology_encoder(graph_state, update_count=1)
+
+    assert agent.encoder.gat2 is None
+    assert graph_state.edge_features.shape == (4, 3)
+    assert len(actions) == 2
+    assert len(log_probs) == 2
+    assert warmup_loss > 0.0
+
+
 def test_graph_gat_mappo_actor_uses_local_subgraph_embeddings() -> None:
     """One device actor input should not depend on another device feature."""
     torch.manual_seed(35)
@@ -590,6 +624,16 @@ def test_graph_gat_mappo_is_registered_as_separate_comparison_model() -> None:
 
     assert configs["Graph-GAT MAPPO"]["class"] is GraphGATMAPPOAgent
     assert configs["Graph-GAT Warmup MAPPO"]["class"] is GraphGATMAPPOAgent
+    assert (
+        configs["Lightweight Graph-GAT Warmup MAPPO"]["class"]
+        is GraphGATMAPPOAgent
+    )
+    assert (
+        configs["Lightweight Graph-GAT Warmup MAPPO"]["kwargs"][
+            "lightweight_topology"
+        ]
+        is True
+    )
     assert (
         configs["Graph-GAT Warmup MAPPO"]["kwargs"][
             "topology_warmup_episodes"

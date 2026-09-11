@@ -17,6 +17,8 @@ from dataset.data_loader import KolektorSDDLoader
 from utils.plotter import DITENPlotter
 from utils.priority_model_training import load_or_train_priority_model
 from utils.experiment_setup import (
+    TASK_PRIORITY_FEATURE_DIM,
+    broadcast_priority_order,
     build_priorities,
     build_task_priority_model,
     generate_task_dags_for_episode,
@@ -111,6 +113,21 @@ def train_maddpg(
     """
     num_agents = len(agents)
     history = {"reward": [], "delay": [], "energy": []}
+    template_task_dags = generate_task_dags_for_episode(
+        devices[:1],
+        data_loader,
+        cpu_cycle_scale=PAPER_PARAMS["provisional_table2_needed"][
+            "task_cpu_cycle_scale"
+        ],
+    )
+    template_device_id = devices[0].id
+    shared_priority_order = build_priorities(
+        template_task_dags, priority_model
+    )[template_device_id]
+    fixed_priorities = broadcast_priority_order(
+        [device.id for device in devices], shared_priority_order
+    )
+    print(f"Fixed task-priority order: {shared_priority_order}")
 
     episode_iterator = trange(num_episodes, desc="Training e-ATN-MADDPG", leave=True)
     for episode in episode_iterator:
@@ -136,9 +153,7 @@ def train_maddpg(
                     "task_cpu_cycle_scale"
                 ],
             )
-            priorities = build_priorities(task_dags, priority_model)
-
-            current_joint_state = env.start_time_slot(task_dags, priorities)
+            current_joint_state = env.start_time_slot(task_dags, fixed_priorities)
             slot_done = False
             while not slot_done and not episode_done:
                 joint_actions = _collect_joint_actions(agents, current_joint_state)
@@ -208,7 +223,10 @@ if __name__ == "__main__":
     server_locations = [np.array([20.0, 30.0]), np.array([45.0, 50.0]), np.array([70.0, 20.0])]
     servers = []
     for server_index in range(NUM_SERVERS):
-        edge_power_hz = np.random.uniform(2.3, 2.5) * 1e9  # [2.3, 2.5] GHz
+        edge_power_hz = np.random.uniform(
+            provisional["server_compute_power_min_ghz"],
+            provisional["server_compute_power_max_ghz"],
+        ) * 1e9
         server = EdgeServer(
             server_id=server_index + 1,
             location=server_locations[server_index],
@@ -229,7 +247,10 @@ if __name__ == "__main__":
     ]
     devices = []
     for device_index in range(NUM_DEVICES):
-        local_power_hz = np.random.uniform(0.8, 1.2) * 1e9   # [0.8, 1.2] GHz
+        local_power_hz = np.random.uniform(
+            provisional["device_compute_power_min_ghz"],
+            provisional["device_compute_power_max_ghz"],
+        ) * 1e9
         device = IndustrialDevice(
             device_id=device_index + 1,
             location=robot_starts[device_index],
@@ -248,14 +269,14 @@ if __name__ == "__main__":
         slot_duration=confirmed["slot_duration_s"],
         subslot_count=200,
         time_slots=TIME_SLOTS,
-        lambda1=1.4,
-        lambda2=0.1,
-        lambda3=0.8,
-        lambda4=0.4,
-        lambda5=0.7,
-        p_out_value=-0.7,
-        local_estimation_error=0.2,
-        edge_estimation_error=0.0,
+        lambda1=provisional["lambda1"],
+        lambda2=provisional["lambda2"],
+        lambda3=provisional["lambda3"],
+        lambda4=provisional["lambda4"],
+        lambda5=provisional["lambda5"],
+        p_out_value=provisional["p_out_value"],
+        local_estimation_error=provisional["local_estimation_error"],
+        edge_estimation_error=provisional["edge_estimation_error"],
     )
     # 5. Khởi tạo DRL Agents (\epsilon-ATN-MADDPG)
     # Xác định kích thước State và Action
@@ -284,7 +305,7 @@ if __name__ == "__main__":
     priority_model_name = str(provisional["priority_model"]).lower()
     priority_model = build_task_priority_model(
         priority_model_name,
-        num_features=3,
+        num_features=TASK_PRIORITY_FEATURE_DIM,
         hidden_dim=int(confirmed["gcn_hidden_dim"]),
     )
     priority_ckpt_path = get_priority_checkpoint_path(priority_model_name)

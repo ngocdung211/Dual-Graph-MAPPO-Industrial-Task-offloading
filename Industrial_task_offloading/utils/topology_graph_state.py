@@ -5,6 +5,10 @@ from dataclasses import dataclass
 import torch
 
 
+STANDARD_TOPOLOGY_EDGE_FEATURE_DIM = 7
+LIGHTWEIGHT_TOPOLOGY_EDGE_FEATURE_DIM = 3
+
+
 @dataclass(frozen=True)
 class TopologyGraphState:
     """Graph tensors for device-server topology state."""
@@ -20,6 +24,7 @@ def build_topology_graph_state(
     joint_state: torch.Tensor,
     num_devices: int,
     num_servers: int,
+    lightweight: bool = False,
 ) -> TopologyGraphState:
     """Convert the flat DITEN joint state into graph tensors.
 
@@ -27,10 +32,13 @@ def build_topology_graph_state(
         joint_state: Flat state tensor shaped `(num_devices, state_dim)`.
         num_devices: Number of device nodes.
         num_servers: Number of edge-server nodes.
+        lightweight: Build one server-to-device edge per pair with three
+            nonredundant connection features instead of two directed edges.
 
     Returns:
-        Topology graph state with shared node features and bidirectional links.
-        Edges are ordered by device, server, then forward/backward direction.
+        Topology graph state with shared node features and configured links.
+        Edges are ordered by device and server; standard graphs then alternate
+        device-to-server and server-to-device directions.
 
     Raises:
         ValueError: If the flat state dimensions are incompatible.
@@ -55,7 +63,12 @@ def build_topology_graph_state(
         state_tensor, edge_power_offset, edge_wait_offset, num_servers, priority_width
     )
     node_features = torch.cat([device_features, server_features], dim=0)
-    edge_index, edge_features = _build_valid_connection_edges(
+    edge_builder = (
+        _build_lightweight_connection_edges
+        if lightweight
+        else _build_valid_connection_edges
+    )
+    edge_index, edge_features = edge_builder(
         state_tensor,
         num_devices,
         num_servers,
@@ -162,6 +175,50 @@ def _build_valid_connection_edges(
         return (
             torch.empty((2, 0), dtype=torch.long),
             torch.empty((0, 7), dtype=torch.float32),
+        )
+
+    return (
+        torch.tensor(edge_pairs, dtype=torch.long).transpose(0, 1),
+        torch.tensor(edge_features, dtype=torch.float32),
+    )
+
+
+def _build_lightweight_connection_edges(
+    state_tensor: torch.Tensor,
+    num_devices: int,
+    num_servers: int,
+    window_start_offset: int,
+    window_end_offset: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build one server-to-device edge with three features for every pair."""
+    edge_pairs: list[tuple[int, int]] = []
+    edge_features: list[list[float]] = []
+
+    for device_index in range(num_devices):
+        for server_index in range(num_servers):
+            window_start = float(
+                state_tensor[device_index, window_start_offset + server_index]
+            )
+            window_end = float(
+                state_tensor[device_index, window_end_offset + server_index]
+            )
+            window_length = max(0.0, window_end - window_start)
+            is_connected = 1.0 if window_length > 0.0 else 0.0
+            device_node = device_index
+            server_node = num_devices + server_index
+
+            edge_pairs.append((server_node, device_node))
+            edge_features.append(
+                [is_connected, window_start, window_length]
+            )
+
+    if not edge_pairs:
+        return (
+            torch.empty((2, 0), dtype=torch.long),
+            torch.empty(
+                (0, LIGHTWEIGHT_TOPOLOGY_EDGE_FEATURE_DIM),
+                dtype=torch.float32,
+            ),
         )
 
     return (

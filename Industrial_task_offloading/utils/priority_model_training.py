@@ -27,44 +27,14 @@ def _minmax_normalize(values: List[float]) -> List[float]:
     return [(v - v_min) / (v_max - v_min) for v in values]
 
 
-def _compute_levels(task_dag: TaskDAG) -> Dict[int, int]:
-    """Compute hierarchy levels for DAG nodes.
+def _compute_upward_cpu_rank(task_dag: TaskDAG) -> Dict[int, float]:
+    """Compute a critical-path CPU rank for each subtask.
 
     Args:
         task_dag: Task DAG definition.
 
     Returns:
-        Mapping of subtask IDs to hierarchy levels.
-    """
-    indegree = {sid: 0 for sid in task_dag.subtasks.keys()}
-    succs: Dict[int, List[int]] = {sid: [] for sid in task_dag.subtasks.keys()}
-    for pred, succ in task_dag.edges:
-        indegree[succ] += 1
-        succs[pred].append(succ)
-
-    queue = [sid for sid, deg in indegree.items() if deg == 0]
-    levels = {sid: 1 for sid in queue}
-    while queue:
-        cur = queue.pop(0)
-        cur_level = levels[cur]
-        for nxt in succs[cur]:
-            levels[nxt] = max(levels.get(nxt, 1), cur_level + 1)
-            indegree[nxt] -= 1
-            if indegree[nxt] == 0:
-                queue.append(nxt)
-    for sid in task_dag.subtasks.keys():
-        levels.setdefault(sid, 1)
-    return levels
-
-
-def _compute_successor_cpu(task_dag: TaskDAG) -> Dict[int, float]:
-    """Compute cumulative successor CPU cycles for each subtask.
-
-    Args:
-        task_dag: Task DAG definition.
-
-    Returns:
-        Mapping of subtask IDs to cumulative successor CPU cycles.
+        Mapping of subtask IDs to upward CPU ranks.
     """
     succs: Dict[int, List[int]] = {sid: [] for sid in task_dag.subtasks.keys()}
     for pred, succ in task_dag.edges:
@@ -75,12 +45,13 @@ def _compute_successor_cpu(task_dag: TaskDAG) -> Dict[int, float]:
     def dfs(node_id: int) -> float:
         if node_id in memo:
             return memo[node_id]
-        total = 0.0
-        for nxt in succs[node_id]:
-            total += float(task_dag.subtasks[nxt].cpu_cycles)
-            total += dfs(nxt)
-        memo[node_id] = total
-        return total
+        successor_rank = max(
+            (dfs(next_id) for next_id in succs[node_id]),
+            default=0.0,
+        )
+        rank = float(task_dag.subtasks[node_id].cpu_cycles) + successor_rank
+        memo[node_id] = rank
+        return rank
 
     for sid in task_dag.subtasks.keys():
         dfs(sid)
@@ -97,25 +68,10 @@ def build_task_priority_targets(task_dag: TaskDAG) -> torch.Tensor:
         Tensor of priority targets shaped (num_nodes, 1).
     """
     subtask_ids = sorted(task_dag.subtasks.keys())
-    levels = _compute_levels(task_dag)
-    max_level = max(levels.values()) if levels else 1
-    out_degree = {
-        sid: sum(1 for pred, _ in task_dag.edges if pred == sid) for sid in subtask_ids
-    }
-    successor_cpu = _compute_successor_cpu(task_dag)
-
-    hierarchy_score = [float(max_level - levels[sid] + 1) for sid in subtask_ids]
-    out_degree_score = [float(out_degree[sid]) for sid in subtask_ids]
-    successor_cpu_score = [float(successor_cpu[sid]) for sid in subtask_ids]
-
-    h_norm = _minmax_normalize(hierarchy_score)
-    o_norm = _minmax_normalize(out_degree_score)
-    c_norm = _minmax_normalize(successor_cpu_score)
-
-    # Paper-inspired label composition: hierarchy + out-degree + successor compute volume.
-    targets = [
-        0.3 * h_norm[i] + 0.3 * o_norm[i] + 0.4 * c_norm[i] for i in range(len(subtask_ids))
-    ]
+    upward_rank = _compute_upward_cpu_rank(task_dag)
+    targets = _minmax_normalize(
+        [float(upward_rank[subtask_id]) for subtask_id in subtask_ids]
+    )
     return torch.tensor(targets, dtype=torch.float32).unsqueeze(1)
 
 

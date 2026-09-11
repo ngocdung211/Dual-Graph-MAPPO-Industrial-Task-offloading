@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import time
@@ -255,6 +256,12 @@ def save_comparison_outputs(
         plotter.save_dir, f"{date_string}_last_training_state.jsonl"
     )
     _write_last_training_state_jsonl(last_state_path, last_training_state_rows)
+    episode_history_path = os.path.join(
+        plotter.save_dir, f"{date_string}_episode_history.csv"
+    )
+    _write_episode_history_csv(
+        episode_history_path, raw_results, last_training_state_rows
+    )
     checkpoint_paths = [
         _save_model_checkpoint(plotter.save_dir, checkpoint)
         for checkpoint in model_checkpoints
@@ -262,8 +269,65 @@ def save_comparison_outputs(
     return {
         "plot_paths": plot_paths,
         "last_state_path": last_state_path,
+        "episode_history_path": episode_history_path,
         "checkpoint_paths": checkpoint_paths,
     }
+
+
+def _write_episode_history_csv(
+    output_path: str,
+    raw_results: Dict[str, Dict[str, List[float]]],
+    last_training_state_rows: Sequence[Dict[str, object]],
+) -> None:
+    """Write one row per model and episode with reward, delay, and energy.
+
+    The file is the local equivalent of a W&B history export so that runs
+    logged without tracking can still be aggregated across seeds.
+
+    Args:
+        output_path: Destination CSV path.
+        raw_results: Metric name to model name to per-episode values.
+        last_training_state_rows: Final-state rows used for run metadata.
+    """
+    metadata_by_model = {
+        str(row["model"]): row for row in last_training_state_rows
+    }
+    reward_by_model = raw_results.get("reward", {})
+    delay_by_model = raw_results.get("delay", {})
+    energy_by_model = raw_results.get("energy", {})
+    with open(output_path, "w", encoding="utf-8", newline="") as output_file:
+        writer = csv.writer(output_file)
+        writer.writerow(
+            [
+                "model",
+                "seed",
+                "topology_scenario",
+                "experiment_note",
+                "episode",
+                "reward",
+                "delay_s",
+                "energy_j",
+            ]
+        )
+        for model_name, rewards in reward_by_model.items():
+            metadata = metadata_by_model.get(model_name, {})
+            delays = delay_by_model.get(model_name, [])
+            energies = energy_by_model.get(model_name, [])
+            for episode_index, reward in enumerate(rewards):
+                writer.writerow(
+                    [
+                        model_name,
+                        metadata.get("experiment_seed", ""),
+                        metadata.get("topology_scenario", ""),
+                        metadata.get("experiment_note", ""),
+                        episode_index + 1,
+                        reward,
+                        delays[episode_index] if episode_index < len(delays) else "",
+                        energies[episode_index]
+                        if episode_index < len(energies)
+                        else "",
+                    ]
+                )
 
 
 def _mean_flat_history(history: Sequence[float], target_episodes: int) -> List[float]:
