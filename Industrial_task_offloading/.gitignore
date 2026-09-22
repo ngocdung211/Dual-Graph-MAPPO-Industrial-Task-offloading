@@ -19,7 +19,6 @@ results/
 archive/old_results/
 *.inspect.ndjson
 .agents/
-AGENTS.md
 .tmp*/
 .tmp.driveupload/
 tmp/
