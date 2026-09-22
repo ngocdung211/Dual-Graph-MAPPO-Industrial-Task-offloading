@@ -1,14 +1,23 @@
-"""Graph-GAT MAPPO ablation agent."""
+"""Graph-GAT MAPPO controller and graph-specific training workflow.
 
-from dataclasses import dataclass
+The current 30-device/9-server experiment enables GAE and four PPO minibatches
+through runner flags. Warmup, lightweight topology, and greedy action selection
+are optional variants; the constructor defaults remain available for older runs.
+"""
+
 from typing import List, Optional, Tuple
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
 
+from baselines.graph_gat_rollout import GraphGATRolloutBuffer, GraphGATTransition
+from models.graph_gat_heads import (
+    GraphGATActor,
+    GraphGATValueCritic,
+    TopologyWarmupHead,
+)
 from models.topology_gat import TopologyGATEncoder
 from utils.gpu_readiness import resolve_torch_device
 from utils.rl_advantages import (
@@ -20,171 +29,14 @@ from utils.rl_advantages import (
 from utils.topology_graph_state import TopologyGraphState
 
 
-class GraphGATActor(nn.Module):
-    """Score local execution and each device-server pair independently."""
-
-    def __init__(
-        self,
-        embedding_dim: int,
-        edge_feature_dim: int,
-        hidden_dim: int = 64,
-    ):
-        """Initialize the actor head.
-
-        Args:
-            embedding_dim: Device and server GAT embedding dimension.
-            edge_feature_dim: Device-server edge feature dimension.
-            hidden_dim: Hidden layer width.
-        """
-        super(GraphGATActor, self).__init__()
-        self.local_fc1 = nn.Linear(embedding_dim, hidden_dim)
-        self.local_fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.local_output = nn.Linear(hidden_dim, 1)
-        pair_feature_dim = 2 * embedding_dim + edge_feature_dim
-        self.server_fc1 = nn.Linear(pair_feature_dim, hidden_dim)
-        self.server_fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.server_output = nn.Linear(hidden_dim, 1)
-
-    def forward(
-        self,
-        device_embeddings: torch.Tensor,
-        server_embeddings: torch.Tensor,
-        edge_features: torch.Tensor,
-    ) -> torch.Tensor:
-        """Return local and server-conditioned action probabilities."""
-        local_hidden = F.relu(self.local_fc1(device_embeddings))
-        local_hidden = F.relu(self.local_fc2(local_hidden))
-        local_logits = self.local_output(local_hidden)
-
-        expanded_devices = device_embeddings.unsqueeze(-2).expand_as(
-            server_embeddings
-        )
-        pair_features = torch.cat(
-            [expanded_devices, server_embeddings, edge_features], dim=-1
-        )
-        server_hidden = F.relu(self.server_fc1(pair_features))
-        server_hidden = F.relu(self.server_fc2(server_hidden))
-        server_logits = self.server_output(server_hidden).squeeze(-1)
-
-        action_logits = torch.cat([local_logits, server_logits], dim=-1)
-        return F.softmax(action_logits, dim=-1)
-
-
-class GraphGATValueCritic(nn.Module):
-    """Centralized value critic over all device embeddings."""
-
-    def __init__(self, embedding_dim: int, num_devices: int, hidden_dim: int = 64):
-        """Initialize the centralized graph critic.
-
-        Args:
-            embedding_dim: Device embedding dimension from the GAT encoder.
-            num_devices: Number of device agents.
-            hidden_dim: Hidden layer width.
-        """
-        super(GraphGATValueCritic, self).__init__()
-        self.fc1 = nn.Linear(embedding_dim * num_devices, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, 1)
-
-    def forward(self, device_embeddings: torch.Tensor) -> torch.Tensor:
-        """Return one scalar value for the joint graph state."""
-        if device_embeddings.ndim == 2:
-            joint_embedding = device_embeddings.reshape(1, -1)
-        else:
-            joint_embedding = device_embeddings.reshape(
-                *device_embeddings.shape[:-2], -1
-            )
-        x = F.relu(self.fc1(joint_embedding))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
-
-
-class TopologyWarmupHead(nn.Module):
-    """Predict topology targets from each device-server embedding pair."""
-
-    def __init__(self, embedding_dim: int, hidden_dim: int = 64):
-        """Initialize topology warmup prediction head.
-
-        Args:
-            embedding_dim: Device embedding dimension from local GAT subgraph.
-            hidden_dim: Hidden layer width.
-        """
-        super(TopologyWarmupHead, self).__init__()
-        self.fc1 = nn.Linear(2 * embedding_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.feasible_head = nn.Linear(hidden_dim, 1)
-        self.window_head = nn.Linear(hidden_dim, 1)
-
-    def forward(
-        self,
-        device_embeddings: torch.Tensor,
-        server_embeddings: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return feasibility logits and window estimates for every pair."""
-        expanded_devices = device_embeddings.unsqueeze(-2).expand_as(
-            server_embeddings
-        )
-        pair_embeddings = torch.cat(
-            [expanded_devices, server_embeddings], dim=-1
-        )
-        x = F.relu(self.fc1(pair_embeddings))
-        x = F.relu(self.fc2(x))
-        feasible_logits = self.feasible_head(x).squeeze(-1)
-        window_estimates = torch.sigmoid(self.window_head(x).squeeze(-1))
-        return feasible_logits, window_estimates
-
-
-@dataclass(frozen=True)
-class GraphGATTransition:
-    """One on-policy Graph-GAT MAPPO transition."""
-
-    graph_state: TopologyGraphState
-    actions: List[int]
-    rewards: List[float]
-    next_graph_state: TopologyGraphState
-    old_log_probs: List[float]
-    done: bool
-
-
-class GraphGATRolloutBuffer:
-    """Store on-policy graph transitions for Graph-GAT MAPPO."""
-
-    def __init__(self):
-        """Initialize an empty graph rollout buffer."""
-        self.transitions: List[GraphGATTransition] = []
-
-    def push(
-        self,
-        graph_state: TopologyGraphState,
-        actions: List[int],
-        rewards: List[float],
-        next_graph_state: TopologyGraphState,
-        old_log_probs: List[float],
-        done: bool,
-    ) -> None:
-        """Store one graph transition."""
-        self.transitions.append(
-            GraphGATTransition(
-                graph_state=graph_state,
-                actions=list(actions),
-                rewards=list(rewards),
-                next_graph_state=next_graph_state,
-                old_log_probs=list(old_log_probs),
-                done=bool(done),
-            )
-        )
-
-    def as_transitions(self) -> List[GraphGATTransition]:
-        """Return stored transitions in insertion order."""
-        return list(self.transitions)
-
-    def clear(self) -> None:
-        """Remove all stored transitions."""
-        self.transitions.clear()
-
-    def __len__(self) -> int:
-        """Return number of stored graph transitions."""
-        return len(self.transitions)
+__all__ = [
+    "GraphGATActor",
+    "GraphGATValueCritic",
+    "TopologyWarmupHead",
+    "GraphGATTransition",
+    "GraphGATRolloutBuffer",
+    "GraphGATMAPPOAgent",
+]
 
 
 class GraphGATMAPPOAgent:
@@ -273,6 +125,7 @@ class GraphGATMAPPOAgent:
         self.window_length_feature_index = 2 if lightweight_topology else 6
         self.device = resolve_torch_device(device)
 
+        # PPO shares this encoder between the local actor and global critic.
         self.encoder = TopologyGATEncoder(
             node_feature_dim=node_feature_dim,
             edge_feature_dim=edge_feature_dim,
@@ -290,6 +143,7 @@ class GraphGATMAPPOAgent:
             num_devices=num_devices,
             hidden_dim=hidden_dim,
         )
+        # Only Warmup variants train this auxiliary head before action selection.
         self.topology_warmup_head = TopologyWarmupHead(
             embedding_dim=embedding_dim,
             hidden_dim=hidden_dim,
@@ -324,6 +178,7 @@ class GraphGATMAPPOAgent:
             lr=topology_warmup_lr,
         )
 
+    # Main rollout path: sample device actions and keep behavior log-probabilities.
     def select_actions_with_log_probs(
         self, graph_state: TopologyGraphState
     ) -> Tuple[List[int], List[float]]:
@@ -338,6 +193,7 @@ class GraphGATMAPPOAgent:
                 [float(value) for value in log_probs.detach().cpu().tolist()],
             )
 
+    # Evaluation variant: choose the highest-probability action without sampling.
     def select_greedy_actions(
         self, graph_state: TopologyGraphState
     ) -> List[int]:
@@ -381,6 +237,8 @@ class GraphGATMAPPOAgent:
 
         with torch.no_grad():
             current_values = self._values_from_stacked(*stacked_features)
+            # The current 30/9 command sets --use-gae; the other branch keeps
+            # the historical one-step TD behavior when that flag is omitted.
             if self.use_gae:
                 last_value = self._values_from_stacked(
                     *self._stack_graph_features(next_graph_states[-1:])
@@ -400,8 +258,10 @@ class GraphGATMAPPOAgent:
                 advantages, target_values = compute_one_step_td(
                     team_rewards, current_values, next_values, dones, self.gamma
                 )
+            # Normalize across the whole rollout before splitting PPO minibatches.
             advantages = normalize_advantages(advantages)
 
+        # The current 30/9 run uses four minibatches; one means a full-batch step.
         for _ in range(self.ppo_epochs):
             for batch_indices in minibatch_indices(
                 batch_size, self.num_minibatches, self.device
@@ -435,6 +295,7 @@ class GraphGATMAPPOAgent:
 
         rollout_buffer.clear()
 
+    # Optional single-state helper; PPO uses the batched encoder below.
     def _encode_graph(self, graph_state: TopologyGraphState) -> torch.Tensor:
         """Encode the complete topology into global device embeddings."""
         device_features = self._selected_node_features(
@@ -453,6 +314,7 @@ class GraphGATMAPPOAgent:
             backward_edge_features=backward_edge_features,
         )
 
+    # Warmup variants: train the encoder on topology labels during early episodes.
     def should_warmup_topology(self, episode_index: int) -> bool:
         """Return whether online topology warmup is active for this episode."""
         return (
@@ -500,6 +362,7 @@ class GraphGATMAPPOAgent:
             forward_edge_features[:, :, self.window_length_feature_index],
         )
 
+    # Main action path: one local graph per device, scored by the shared actor.
     def _actor_probabilities_for_graph_state(
         self, graph_state: TopologyGraphState
     ) -> torch.Tensor:
@@ -579,9 +442,11 @@ class GraphGATMAPPOAgent:
         )
         forward_edge_features = pair_features[:, :, 0, :]
         if self.lightweight_topology:
+            # One-way topology has no reverse edge; the encoder accepts two tensors.
             return forward_edge_features, forward_edge_features
         return forward_edge_features, pair_features[:, :, 1, :]
 
+    # Single-device graph helper retained for callers; action sampling is batched.
     def _local_subgraph_for_device(
         self, graph_state: TopologyGraphState, device_index: int
     ) -> TopologyGraphState:
@@ -668,6 +533,7 @@ class GraphGATMAPPOAgent:
             probabilities, forward_edge_features
         )
 
+    # Mask variants drop disconnected servers; unmasked variants return actor output.
     def _masked_action_probabilities_for_edges(
         self,
         probabilities: torch.Tensor,
@@ -678,7 +544,7 @@ class GraphGATMAPPOAgent:
             return probabilities
 
         action_mask = torch.zeros_like(probabilities, dtype=torch.bool)
-        action_mask[..., 0] = True
+        action_mask[..., 0] = True  # Local execution remains valid for every device.
         action_mask[..., 1:] = (
             forward_edge_features[..., self.connected_feature_index] > 0.2
         )
@@ -688,6 +554,7 @@ class GraphGATMAPPOAgent:
         ).clamp_min(1e-8)
         return masked_probabilities / probability_sum
 
+    # Main PPO path: stack rollout graphs once, then slice them into minibatches.
     def _stack_graph_features(
         self, graph_states: List[TopologyGraphState]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -782,6 +649,7 @@ class GraphGATMAPPOAgent:
             forward_edge_features,
         )
         distribution = Categorical(probabilities)
+        # The critic sees all device embeddings, while the actor uses local graphs.
         global_embeddings = self.encoder.forward_batched_global_rollout(
             device_features,
             server_features,

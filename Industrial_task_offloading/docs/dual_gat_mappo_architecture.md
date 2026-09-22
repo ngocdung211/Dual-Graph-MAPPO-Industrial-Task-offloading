@@ -3,6 +3,8 @@
 This document describes the **current implementation**, using the large topology
 as the running example. It is the primary architecture reference and should be
 updated whenever the model or training procedure changes.
+Select this 30-device/9-server scenario with
+`--topology-scenario large_30d_9s` when running `run_comparision.py`.
 
 ## 1. Configuration and end-to-end flow
 
@@ -15,7 +17,7 @@ updated whenever the model or training procedure changes.
 | `T` | time slots per episode | 50 |
 | `L=T×M` | joint transitions per episode | 250 |
 | `H`, `Z` | topology-GAT hidden/embedding widths | 64, 64 |
-| `K` | PPO passes over one rollout | 8 |
+| `K` | PPO passes over one rollout | 4 |
 
 ```mermaid
 flowchart LR
@@ -37,7 +39,7 @@ flowchart LR
     ENV["Environment step"]
     NEXT["Next state [30,46]"]
     BUFFER["Rollout buffer<br/>250 transitions"]
-    PPO["8 PPO passes<br/>encoder + actor + critic"]
+    PPO["4 PPO passes<br/>encoder + actor + critic"]
 
     TEMPLATE --> TGAT --> ORDER --> STATE
     DAG --> STATE --> GRAPH
@@ -83,9 +85,11 @@ Adjacency [5,5]
 
 Supervised targets use the normalized upward CPU rank
 `rank(v)=CPU(v)+max rank(successor)`. Tasks 2 and 3 remain parallel, but their
-workloads are now asymmetric: task 2 uses 50 cycles/pixel and task 3 uses 200
-cycles/pixel. The trained GAT and GCN therefore infer `1→3→2→4→5`; this order
-is not hard-coded. The offloading actor still decides local versus edge.
+workloads are now asymmetric: task 2 uses 50 cycles/pixel and task 3 uses 250
+cycles/pixel before the configured CPU scale is applied. Their relative order is
+inferred from the model scores and representative DAG; `1→3→2→4→5` is a
+possible result, not a hard-coded guarantee. The offloading actor still decides
+local versus edge.
 
 Saved-policy inference is handled by `inference_priority_comparison.py`. It
 compares the fixed inferred order against `1→2→3→4→5` using deterministic
@@ -112,7 +116,8 @@ offloaded execution contributes transmission energy only. Current compute
 ranges are 0.8–1.2 GHz for devices and
 2.3–2.5 GHz for servers. Both device and server DT estimates use independent
 uniform relative errors in `[-5%, 5%]` at each time slot. Reward weights are
-`(lambda1,...,lambda5)=(3,3,3,3,0.5)`.
+`(lambda1,...,lambda5)=(5,5,5,5,1)`, the failed-offload penalty is `-1`,
+and sampled task CPU demand is scaled by `1.4`.
 
 Thus the joint state is `[D,46] = [30,46]`. One joint action completes the
 current subtask for all 30 devices, increments their subtask indices, and returns
@@ -149,8 +154,10 @@ Each directed edge has seven features:
 ```
 
 The graph contains all 270 device–server pairs, including disconnected pairs.
-The large experiments use `use_action_mask=False`, so disconnected server
+Unmasked Graph-GAT variants set `use_action_mask=False`, so disconnected server
 actions remain in the policy distribution and are handled by the environment.
+Mask variants set `use_action_mask=True`; this choice is independent of the
+30-device/9-server topology.
 
 Each Topology-GAT layer applies:
 
@@ -168,9 +175,11 @@ The encoder has two layers: `14→64`, ELU, then `64→64`.
 
 ### Lightweight topology ablation
 
-The optional `Lightweight Graph-GAT Warmup MAPPO` keeps the same node features,
-actor, critic, reward, rollout length, PPO settings, and warmup schedule. Only
-the topology representation is compressed:
+The optional lightweight representation is implemented in the graph builder and
+agent, but `Lightweight Graph-GAT Warmup MAPPO` is not currently registered in
+`build_algorithm_configs()`. When instantiated with the same training settings,
+it keeps the node features, actor/critic structure, reward, and rollout length
+while compressing the topology representation:
 
 | Component | Standard | Lightweight |
 |---|---:|---:|
@@ -236,8 +245,9 @@ parameters**. The centralized critic is training-only.
 
 ## 5. Warmup, rollout, and MAPPO update
 
-During the first 20 episodes, four auxiliary updates are performed before each
-joint action. Warmup and MAPPO therefore coexist; MAPPO is active from episode 1.
+For Warmup variants, ten auxiliary updates are performed before each joint
+action during the first five episodes. Warmup and MAPPO therefore coexist;
+MAPPO is active from episode 1. Non-Warmup variants perform no auxiliary updates.
 
 ```text
 Local embeddings:
@@ -247,11 +257,11 @@ Local embeddings:
   → feasibility logits [30,9]
   → window estimates [30,9]
 
-L_aux = BCE(feasibility) + 0.5 × MSE(window length)
+L_aux = BCEWithLogits(feasibility) + 0.5 × MSE(window length)
 ```
 
 Warmup updates `Topology-GAT + warmup head`; it does not update the actor or
-critic. After episode 20, only the auxiliary updates stop.
+critic. After episode 5, only the auxiliary updates stop.
 
 ```mermaid
 sequenceDiagram
@@ -269,13 +279,13 @@ sequenceDiagram
         T->>M: initialize state [30,46]
         loop each subtask index
             M->>M: build graph
-            M->>M: optional 4-step warmup
+            M->>M: optional 10-step warmup
             M->>M: sample joint action [30]
             M->>B: store transition
         end
     end
     B->>P: 250 transitions
-    loop K = 8 full-rollout passes
+    loop K = 4 full-rollout passes
         P->>P: actor loss + critic loss
         P->>P: update encoder, actor, critic
     end
@@ -346,13 +356,15 @@ MLP policy under the *same* centralized-training structure:
 
 The existing `MAPPO` entry keeps per-agent actors, per-agent critics, and
 per-agent rewards; it is closer to independent PPO with a centralized critic
-than to MAPPO with parameter sharing. `Shared MAPPO` differs from
-`Graph-GAT MAPPO` only in how the observation is encoded, so the pair isolates
-the graph encoder from the credit-assignment design.
+than to MAPPO with parameter sharing. `Shared MAPPO` and `Graph-GAT MAPPO`
+both use a shared actor, one team-value critic, and mean team reward. The
+comparison also includes different action-scoring heads: the flat-state MLP
+outputs all action logits, while the graph actor scores local execution and
+each device–server pair separately.
 
 ```text
-Actor:  device state [46] → MLP 46→128→128→10 → softmax   (shared by 30 devices)
-Critic: joint state [1380] → MLP 1380→128→128→1           (one team value)
+Actor:  device state [46] → MLP 46→64→64→10 → softmax   (shared by 30 devices)
+Critic: joint state [1380] → MLP 1380→64→64→1           (one team value)
 ```
 
 ### GATMA comparison baseline
@@ -382,7 +394,7 @@ joint subtask decisions). Each device owns separate online and target networks.
 
 | Module | Parameters | Updated by |
 |---|---:|---|
-| frozen Task-GAT | 1,281 | separate pretraining only |
+| frozen Task-GAT | 1,377 | separate pretraining only |
 | Topology-GAT encoder | 6,272 | auxiliary warmup and MAPPO |
 | shared actor | 21,314 | MAPPO actor loss |
 | centralized critic | 127,169 | MAPPO critic loss |
@@ -405,9 +417,9 @@ gradients are combined in the same backward pass.
 
 ## 7. Implementation caveats
 
-1. **Priority order:** descending score sorting is not a constrained
-   topological sort. The environment rejects an order that violates a DAG edge.
-2. **Warmup behavior policy:** during the first 20 episodes, auxiliary steps
+1. **Priority order:** the highest-scoring ready-node sort respects DAG
+   dependencies. The environment also validates the resulting order.
+2. **Warmup behavior policy:** during the first five episodes, auxiliary steps
    modify the encoder while the rollout is being collected; the behavior policy
    is therefore not fixed throughout those episodes.
 3. **Slot boundary:** the stored next graph after subtask 5 is generated before
@@ -420,6 +432,10 @@ gradients are combined in the same backward pass.
    `--num-minibatches`, and both are off by default so earlier runs reproduce.
 5. **Warmup sampling:** auxiliary warmup uses all current device–server pairs;
    there is no `same_class=True` sampling step in the current implementation.
+6. **Tuned profile:** `--hyperparameters-dir` loads and validates a saved
+   profile, but the runner currently passes `tuned_hyperparameters=None` to
+   `build_algorithm_configs()`, so that CLI path does not apply the stored
+   8-epoch / 20-episode / 4-update values to the agents.
 
 ## 8. Where each shape is defined
 
@@ -431,10 +447,15 @@ utils/topology_graph_state.py :: build_topology_graph_state()
   [D,state_dim] → nodes [D+S,14] and edges [2DS,7] or [DS,3]
         ↓
 baselines/graph_gat_mappo.py :: GraphGATMAPPOAgent
-  reshapes edges to device×server pairs; owns warmup, actor, critic, PPO
+  reshapes edges to device×server pairs; coordinates warmup, action selection, PPO
         ↓
 models/topology_gat.py :: TopologyGATEncoder
   standard 14→64→64 or lightweight 14→64 message passing
+
+models/graph_gat_heads.py
+  shared actor, centralized critic, optional topology warmup head
+baselines/graph_gat_rollout.py
+  on-policy graph transition and rollout buffer
 
 baselines/gatma.py + utils/gatma_training.py
   separate 4-head Actor-GAT/Q-Critic per device + replay/target updates
@@ -449,3 +470,9 @@ baselines/mappo.py, baselines/shared_mappo.py, baselines/graph_gat_mappo.py
 `540` and `270` are runtime edge counts (`2×D×S` and `D×S`), so searching only
 for the literal number will not find them. Search for `build_topology_graph_state`,
 `edge_feature_dim`, `lightweight_topology`, or `class TopologyGATEncoder`.
+
+The runner uses Python with NumPy, PyTorch, and Pillow. `requirements.txt`
+lists Pillow and plotting packages; PyTorch and NumPy must also be available in
+the runtime environment. The KolektorSDD loader uses synthetic task parameters
+when the image dataset is unavailable; W&B and Optuna have separate optional
+requirements files.
