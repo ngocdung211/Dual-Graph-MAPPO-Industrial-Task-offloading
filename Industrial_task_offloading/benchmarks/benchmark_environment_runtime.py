@@ -52,7 +52,7 @@ def _build_environment(scenario_name: str) -> DITENEnv:
             compute_power=2e9,
             transmit_power=confirmed["server_tx_power_w"],
             energy_coeff=confirmed["server_energy_coeff"],
-            coverage_radius=scenario.coverage_radius,
+            coverage_radius=scenario.coverage_radius_for_server(server_index),
         )
         for server_index, location in enumerate(scenario.server_locations)
     ]
@@ -70,6 +70,7 @@ def _build_environment(scenario_name: str) -> DITENEnv:
         local_estimation_error=0.0,
         edge_estimation_error=0.0,
         route_rectangles=scenario.route_rectangles,
+        world_size=scenario.world_size,
     )
 
 

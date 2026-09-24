@@ -1,12 +1,26 @@
 """GATMA baseline adapted to the DITEN device-agent environment."""
 
 import random
+from dataclasses import dataclass
 from typing import Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+
+from utils.gpu_readiness import resolve_torch_device
+
+
+@dataclass(frozen=True)
+class GATMATopologyBatch:
+    """Reusable topology tensors derived from one joint-state batch."""
+
+    node_features: torch.Tensor
+    connected: torch.Tensor
+    local_adjacency: torch.Tensor
+    global_adjacency: torch.Tensor
+    single_state: bool
 
 
 def _build_topology_inputs(
@@ -83,6 +97,33 @@ def _build_global_adjacency(connected: torch.Tensor) -> torch.Tensor:
     adjacency[:, :num_devices, num_devices:] = connected
     adjacency[:, num_devices:, :num_devices] = connected.transpose(1, 2)
     return adjacency
+
+
+def build_gatma_topology_batch(
+    joint_states: torch.Tensor,
+    num_servers: int,
+) -> GATMATopologyBatch:
+    """Build topology features and adjacency once for all GATMA networks."""
+    single_state = joint_states.ndim == 2
+    node_features, connected = _build_topology_inputs(
+        joint_states, num_servers
+    )
+    batch_size, num_devices, _ = connected.shape
+    local_adjacency = _build_local_adjacency(
+        connected.reshape(batch_size * num_devices, num_servers)
+    ).reshape(
+        batch_size,
+        num_devices,
+        num_servers + 1,
+        num_servers + 1,
+    )
+    return GATMATopologyBatch(
+        node_features=node_features,
+        connected=connected,
+        local_adjacency=local_adjacency,
+        global_adjacency=_build_global_adjacency(connected),
+        single_state=single_state,
+    )
 
 
 class MultiHeadGraphAttention(nn.Module):
@@ -172,31 +213,37 @@ class GATMAActor(nn.Module):
         self.output_fc1 = nn.Linear(embedding_dim, hidden_dim)
         self.output_fc2 = nn.Linear(hidden_dim, action_dim)
 
-    def forward(self, joint_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        joint_states: torch.Tensor | GATMATopologyBatch,
+    ) -> torch.Tensor:
         """Return relaxed categorical offloading actions for this device."""
-        single_state = joint_states.ndim == 2
-        node_features, connected = _build_topology_inputs(
-            joint_states, self.num_servers
+        topology = (
+            joint_states
+            if isinstance(joint_states, GATMATopologyBatch)
+            else build_gatma_topology_batch(joint_states, self.num_servers)
         )
-        num_devices = connected.shape[1]
+        num_devices = topology.connected.shape[1]
         if not 0 <= self.agent_index < num_devices:
             raise ValueError("agent_index is outside the device dimension")
 
         local_nodes = torch.cat(
             [
-                node_features[:, self.agent_index : self.agent_index + 1],
-                node_features[:, num_devices:],
+                topology.node_features[
+                    :, self.agent_index : self.agent_index + 1
+                ],
+                topology.node_features[:, num_devices:],
             ],
             dim=1,
         )
-        adjacency = _build_local_adjacency(
-            connected[:, self.agent_index]
-        )
         hidden_nodes = F.relu(self.input_mlp(local_nodes))
-        device_embedding = self.gat(hidden_nodes, adjacency)[:, 0]
+        device_embedding = self.gat(
+            hidden_nodes,
+            topology.local_adjacency[:, self.agent_index],
+        )[:, 0]
         logits = self.output_fc2(F.relu(self.output_fc1(device_embedding)))
         probabilities = F.softmax(logits, dim=-1)
-        return probabilities.squeeze(0) if single_state else probabilities
+        return probabilities.squeeze(0) if topology.single_state else probabilities
 
 
 class GATMACritic(nn.Module):
@@ -228,14 +275,16 @@ class GATMACritic(nn.Module):
 
     def forward(
         self,
-        joint_states: torch.Tensor,
+        joint_states: torch.Tensor | GATMATopologyBatch,
         joint_actions: torch.Tensor,
     ) -> torch.Tensor:
         """Return one global action-value estimate per batch item."""
-        node_features, connected = _build_topology_inputs(
-            joint_states, self.num_servers
+        topology = (
+            joint_states
+            if isinstance(joint_states, GATMATopologyBatch)
+            else build_gatma_topology_batch(joint_states, self.num_servers)
         )
-        num_devices = connected.shape[1]
+        num_devices = topology.connected.shape[1]
         if joint_actions.ndim != 3 or joint_actions.shape[1:] != (
             num_devices,
             self.action_dim,
@@ -244,14 +293,17 @@ class GATMACritic(nn.Module):
                 "joint_actions must have shape (batch, devices, action_dim)"
             )
 
-        action_features = node_features.new_zeros(
-            (*node_features.shape[:2], self.action_dim)
+        action_features = topology.node_features.new_zeros(
+            (*topology.node_features.shape[:2], self.action_dim)
         )
         action_features[:, :num_devices] = joint_actions
-        critic_inputs = torch.cat([node_features, action_features], dim=-1)
+        critic_inputs = torch.cat(
+            [topology.node_features, action_features], dim=-1
+        )
         hidden_nodes = F.relu(self.input_mlp(critic_inputs))
-        adjacency = _build_global_adjacency(connected)
-        graph_embeddings = self.gat(hidden_nodes, adjacency)
+        graph_embeddings = self.gat(
+            hidden_nodes, topology.global_adjacency
+        )
         graph_embedding = graph_embeddings.mean(dim=1)
         return self.output_fc2(F.relu(self.output_fc1(graph_embedding)))
 
@@ -276,8 +328,9 @@ class GATMAAgent:
         epsilon_init: float = 0.99,
         epsilon_min: float = 0.01,
         exploration_fraction: float = 1.0,
+        device: str = "cpu",
     ) -> None:
-        """Initialize online/target GAT actors and critics."""
+        """Initialize independent online/target networks on CPU or CUDA."""
         del num_agents
         priority_width = state_dim - (5 + 4 * num_servers)
         if priority_width <= 0:
@@ -287,12 +340,14 @@ class GATMAAgent:
 
         self.action_dim = action_dim
         self.agent_index = agent_index
+        self.num_servers = num_servers
         self.gamma = gamma
         self.tau = tau
         self.epsilon_init = epsilon_init
         self.epsilon_min = epsilon_min
         self.epsilon = epsilon_init
         self.exploration_fraction = exploration_fraction
+        self.device = resolve_torch_device(device)
         node_feature_dim = 9 + priority_width
 
         actor_kwargs = {
@@ -312,12 +367,14 @@ class GATMAAgent:
             "embedding_dim": embedding_dim,
             "num_heads": num_heads,
         }
-        self.actor = GATMAActor(**actor_kwargs)
-        self.target_actor = GATMAActor(**actor_kwargs)
+        self.actor = GATMAActor(**actor_kwargs).to(self.device)
+        self.target_actor = GATMAActor(**actor_kwargs).to(self.device)
         self.target_actor.load_state_dict(self.actor.state_dict())
-        self.critic = GATMACritic(**critic_kwargs)
-        self.target_critic = GATMACritic(**critic_kwargs)
+        self.critic = GATMACritic(**critic_kwargs).to(self.device)
+        self.target_critic = GATMACritic(**critic_kwargs).to(self.device)
         self.target_critic.load_state_dict(self.critic.state_dict())
+        self.target_actor.requires_grad_(False)
+        self.target_critic.requires_grad_(False)
         self.actor_optimizer = optim.Adam(
             self.actor.parameters(), lr=actor_lr
         )
@@ -325,14 +382,24 @@ class GATMAAgent:
             self.critic.parameters(), lr=critic_lr
         )
 
-    def select_action(self, joint_state: torch.Tensor) -> int:
+    def select_action(
+        self,
+        joint_state: torch.Tensor | GATMATopologyBatch,
+    ) -> int:
         """Select an epsilon-greedy offloading action from the joint state."""
         if random.random() < self.epsilon:
             return random.randint(0, self.action_dim - 1)
         return self.select_greedy_action(joint_state)
 
-    def select_greedy_action(self, joint_state: torch.Tensor) -> int:
+    def select_greedy_action(
+        self,
+        joint_state: torch.Tensor | GATMATopologyBatch,
+    ) -> int:
         """Return the deterministic actor argmax action."""
+        if not isinstance(joint_state, GATMATopologyBatch):
+            joint_state = torch.as_tensor(
+                joint_state, dtype=torch.float32, device=self.device
+            )
         with torch.no_grad():
             return int(torch.argmax(self.actor(joint_state)).item())
 

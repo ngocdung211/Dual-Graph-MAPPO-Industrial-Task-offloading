@@ -21,6 +21,16 @@ def flatten_topology_metrics(topology_metrics: Dict[str, object]) -> Dict[str, o
         "topology_num_devices": topology_metrics["num_devices"],
         "topology_num_servers": topology_metrics["num_servers"],
         "topology_coverage_radius_m": topology_metrics["coverage_radius_m"],
+        "topology_coverage_radius_min_m": topology_metrics[
+            "coverage_radius_min_m"
+        ],
+        "topology_coverage_radius_max_m": topology_metrics[
+            "coverage_radius_max_m"
+        ],
+        "topology_world_width_m": topology_metrics["world_size_m"][0],
+        "topology_world_height_m": topology_metrics["world_size_m"][1],
+        "topology_seed": topology_metrics["topology_seed"],
+        "topology_server_profile": topology_metrics["server_profile"],
         "topology_avg_feasible_servers": route_samples["avg_feasible_servers"],
         "topology_density": route_samples["density"],
         "topology_zero_link_ratio": route_samples["zero_link_ratio"],
@@ -39,6 +49,16 @@ def flatten_topology_metrics(topology_metrics: Dict[str, object]) -> Dict[str, o
                 "hyperparameter_effective_failed_offload_penalty": (
                     hyperparameter_profile["effective_failed_offload_penalty"]
                 ),
+            }
+        )
+    dataset = topology_metrics.get("dataset")
+    if dataset is not None:
+        flattened.update(
+            {
+                "dataset_path": dataset["dataset_path"],
+                "dataset_mode": dataset["mode"],
+                "dataset_total_images": dataset["total_images"],
+                "dataset_mean_pixels": dataset["mean_pixels"],
             }
         )
     return flattened
@@ -230,12 +250,13 @@ def save_comparison_outputs(
     fixed_baseline_algorithms: frozenset[str],
     experiment_note: str = "",
     topology_scenario: Optional[str] = None,
+    output_root: str = "plots",
 ) -> Dict[str, object]:
     """Save plots, final JSONL rows, and model checkpoints."""
     date_string = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
     safe_note = _safe_experiment_note(experiment_note)
     output_folder = f"{date_string}-{safe_note}" if safe_note else date_string
-    plotter = DITENPlotter2(save_dir=os.path.join("plots", output_folder))
+    plotter = DITENPlotter2(save_dir=os.path.join(output_root, output_folder))
     plot_results = build_plot_results(
         raw_results,
         target_episodes=full_episodes,
@@ -267,6 +288,7 @@ def save_comparison_outputs(
         for checkpoint in model_checkpoints
     ]
     return {
+        "output_dir": plotter.save_dir,
         "plot_paths": plot_paths,
         "last_state_path": last_state_path,
         "episode_history_path": episode_history_path,

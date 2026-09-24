@@ -28,9 +28,10 @@ class DITENEnv:
         p_out_value: float = -1.0,
         local_estimation_error: float = 0.05,
         edge_estimation_error: float = 0.05,
-        time_slots: int = 50,
+        time_slots: int = 100,
         strict_connection_window: bool = True,
         route_rectangles: Optional[Sequence[Sequence[Sequence[float]]]] = None,
+        world_size: Sequence[float] = (100.0, 100.0),
     ):
         """Initialize the DITEN environment.
 
@@ -51,6 +52,7 @@ class DITENEnv:
             time_slots: Number of time slots per episode.
             strict_connection_window: Enforce strict coverage window constraint.
             route_rectangles: Optional custom rectangular mobility routes.
+            world_size: Physical map width and height in meters.
         """
         self.devices: List[IndustrialDevice] = devices
         self.servers: List[EdgeServer] = servers
@@ -97,8 +99,11 @@ class DITENEnv:
         self.device_waypoints: Dict[int, List[np.ndarray]] = {}
         self.device_waypoint_idx: Dict[int, int] = {}
         self.route_rectangles = route_rectangles
+        resolved_world_size = np.asarray(world_size, dtype=float)
+        if resolved_world_size.shape != (2,) or np.any(resolved_world_size <= 0.0):
+            raise ValueError("world_size must contain two positive dimensions")
         self.world_min: np.ndarray = np.array([0.0, 0.0], dtype=float)
-        self.world_max: np.ndarray = np.array([100.0, 100.0], dtype=float)
+        self.world_max: np.ndarray = resolved_world_size
         self._connection_window_cache_key: Optional[Tuple[object, ...]] = None
         subslot_duration = self.slot_duration / float(self.subslot_count)
         self._connection_window_time_offsets = (

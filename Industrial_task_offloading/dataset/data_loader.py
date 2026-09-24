@@ -9,7 +9,12 @@ from PIL import Image
 class KolektorSDDLoader:
     """Load KolektorSDD images and derive TaskDAG subtask parameters."""
 
-    def __init__(self, dataset_path: str, seed: Optional[int] = None):
+    def __init__(
+        self,
+        dataset_path: str,
+        seed: Optional[int] = None,
+        allow_dummy_data: bool = True,
+    ):
         """Initialize the loader.
 
         Args:
@@ -18,8 +23,11 @@ class KolektorSDDLoader:
                 never draws from the global `random` stream so that the task
                 workload is identical across algorithms regardless of how much
                 randomness an agent consumes.
+            allow_dummy_data: Permit synthetic tasks when the dataset is
+                missing or contains no input images.
         """
         self.dataset_path: str = dataset_path
+        self.allow_dummy_data = bool(allow_dummy_data)
         self.image_paths: List[str] = self._index_dataset()
         self.random_generator: random.Random = random.Random(seed)
 
@@ -41,6 +49,12 @@ class KolektorSDDLoader:
         image_paths: List[str] = []
         
         if not os.path.exists(self.dataset_path):
+            if not self.allow_dummy_data:
+                raise FileNotFoundError(
+                    f"Dataset path '{self.dataset_path}' was not found. "
+                    "Pass allow_dummy_data=True only for an intentional "
+                    "synthetic smoke run."
+                )
             print(f"Warning: Dataset path '{self.dataset_path}' not found.")
             print("Running in dummy mode for testing.")
             return []
@@ -54,7 +68,13 @@ class KolektorSDDLoader:
                 )
                 if is_input_image:
                     image_paths.append(os.path.join(root, file))
-                    
+
+        if not image_paths and not self.allow_dummy_data:
+            raise FileNotFoundError(
+                f"Dataset path '{self.dataset_path}' contains no input images. "
+                "Pass allow_dummy_data=True only for an intentional "
+                "synthetic smoke run."
+            )
         return image_paths
 
     def get_random_task_parameters(self) -> Dict[str, Dict[str, float]]:
@@ -117,15 +137,27 @@ class KolektorSDDLoader:
         
         return task_params
 
-    def get_dataset_statistics(self) -> Dict[str, int]:
+    def get_dataset_statistics(self) -> Dict[str, object]:
         """Return dataset statistics used in experiments.
 
         Returns:
             Mapping with dataset counts and alignment with the paper.
         """
-        total = len(self.image_paths)
+        pixel_counts: List[int] = []
+        for image_path in self.image_paths:
+            with Image.open(image_path) as image:
+                pixel_counts.append(image.width * image.height)
+
+        total = len(pixel_counts)
         return {
+            "dataset_path": os.path.abspath(self.dataset_path),
+            "mode": "real" if total else "dummy",
             "total_images": total,
             "paper_expected_total_images": 399,
             "is_paper_count_aligned": total == 399,
+            "min_pixels": min(pixel_counts) if pixel_counts else None,
+            "mean_pixels": (
+                float(sum(pixel_counts) / total) if pixel_counts else None
+            ),
+            "max_pixels": max(pixel_counts) if pixel_counts else None,
         }

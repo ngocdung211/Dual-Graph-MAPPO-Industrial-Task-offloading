@@ -6,6 +6,7 @@ generates plots and JSON summaries for reward, delay, and energy.
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -14,7 +15,7 @@ import torch
 import torch.nn.functional as F
 import random
 from tqdm import trange
-from baselines.gatma import GATMAAgent
+from baselines.gatma import GATMAAgent, build_gatma_topology_batch
 from baselines.graph_gat_mappo import GraphGATMAPPOAgent, GraphGATRolloutBuffer
 from baselines.maac import MAACAgent
 from baselines.mappo import MAPPOAgent, MultiAgentRolloutBuffer
@@ -33,6 +34,7 @@ from environment.diten_env import DITENEnv
 from dataset.data_loader import KolektorSDDLoader
 from models.replay_buffer import MultiAgentReplayBuffer
 from models.maddpg import EpsilonATNMADDPGAgent
+from utils.artifact_sync import sync_completed_run
 from utils.comparison_outputs import (
     build_last_training_state_line,
     build_model_checkpoint,
@@ -123,6 +125,21 @@ def parse_args() -> argparse.Namespace:
         help="Named topology scenario to run.",
     )
     parser.add_argument(
+        "--topology-seed",
+        type=int,
+        default=2026,
+        help="Seed for reproducible per-server coverage sampling.",
+    )
+    parser.add_argument(
+        "--server-profile",
+        choices=("scenario", "uniform", "heterogeneous", "stress"),
+        default="scenario",
+        help=(
+            "Coverage profile. 'scenario' uses each topology's intended "
+            "default; the other values override it."
+        ),
+    )
+    parser.add_argument(
         "--episodes",
         type=int,
         default=None,
@@ -140,9 +157,37 @@ def parse_args() -> argparse.Namespace:
         help="Short experiment note stored in outputs and appended to the output folder.",
     )
     parser.add_argument(
+        "--dataset-path",
+        default="dataset/KolektorSDD",
+        help="Project-local KolektorSDD replica used during training.",
+    )
+    parser.add_argument(
+        "--allow-dummy-data",
+        action="store_true",
+        help="Allow synthetic tasks when the local dataset is unavailable.",
+    )
+    parser.add_argument(
+        "--local-output-root",
+        default="plots",
+        help="Local directory that receives completed run outputs and checkpoints.",
+    )
+    parser.add_argument(
+        "--drive-artifact-root",
+        default=os.environ.get("TASK_OFFLOADING_DRIVE_ROOT", ""),
+        help=(
+            "Optional Google Drive artifact root. The completed local run is "
+            "copied to its runs directory only after training finishes."
+        ),
+    )
+    parser.add_argument(
         "--graph-gat-device",
         default=None,
         help="Override Graph-GAT device: auto, cpu, cuda, or cuda:<index>.",
+    )
+    parser.add_argument(
+        "--gatma-device",
+        default="auto",
+        help="GATMA-Adapted device: auto, cpu, cuda, or cuda:<index>.",
     )
     parser.add_argument(
         "--hyperparameters-dir",
@@ -350,7 +395,7 @@ def build_servers_for_scenario(
                 * 1e9,
                 confirmed["server_tx_power_w"],
                 confirmed["server_energy_coeff"],
-                coverage_radius=scenario.coverage_radius,
+                coverage_radius=scenario.coverage_radius_for_server(server_index - 1),
             )
         )
     return servers
@@ -486,6 +531,7 @@ def load_tuned_hyperparameters(
 def build_algorithm_configs(
     graph_gat_device: Optional[str] = None,
     *,
+    gatma_device: str = "auto",
     tuned_hyperparameters: Optional[Dict[str, Dict[str, object]]] = None,
     graph_gat_lr: Optional[float] = None,
     graph_gat_encoder_lr: Optional[float] = None,
@@ -511,6 +557,7 @@ def build_algorithm_configs(
     Args:
         graph_gat_device: Optional device override applied only to Graph-GAT
             MAPPO variants.
+        gatma_device: Device for GATMA-Adapted online and target networks.
         mappo_entropy_coef: Optional entropy coefficient applied to every flat
             MAPPO agent, so baselines can match the Graph-GAT setting.
         mappo_max_grad_norm: Optional gradient-norm clip applied to every flat
@@ -613,13 +660,15 @@ def build_algorithm_configs(
                 ],
             },
         },
-        "GATMA": {
+        "GATMA-Adapted": {
             "class": GATMAAgent,
             "batch_size": 128,
             "replay_buffer_capacity": 100000,
+            "replay_updates_per_episode": 16,
             "kwargs": {
                 "actor_lr": 1e-4,
                 "critic_lr": 1e-5,
+                "device": gatma_device,
                 "gamma": 0.95,
                 "tau": 0.01,
                 "hidden_dim": 64,
@@ -929,6 +978,11 @@ def select_algorithm_configs(
     """
     if not requested_algorithms:
         return algorithm_configs
+    # Accept the historical CLI name without running the same baseline twice.
+    requested_algorithms = [
+        "GATMA-Adapted" if name == "GATMA" else name
+        for name in requested_algorithms
+    ]
     unknown_algorithms = [
         name for name in requested_algorithms if name not in algorithm_configs
     ]
@@ -1011,10 +1065,16 @@ def _collect_joint_actions(
     local_count = 0
     edge_count = 0
     full_joint_state = torch.as_tensor(joint_state, dtype=torch.float32)
+    gatma_topology = None
+    if agents and isinstance(agents[0], GATMAAgent):
+        full_joint_state = full_joint_state.to(agents[0].device)
+        gatma_topology = build_gatma_topology_batch(
+            full_joint_state, agents[0].num_servers
+        )
     for agent_index, agent in enumerate(agents):
         agent_state = torch.FloatTensor(joint_state[agent_index])
         if isinstance(agent, GATMAAgent):
-            action = agent.select_action(full_joint_state)
+            action = agent.select_action(gatma_topology)
         elif env is not None and hasattr(agent, "select_action_for_subtask"):
             device = env.devices[agent_index]
             step_index = env.current_step[device.id]
@@ -1525,6 +1585,11 @@ def train_algorithm(
         route_rectangles=(
             topology_scenario.route_rectangles if topology_scenario is not None else None
         ),
+        world_size=(
+            topology_scenario.world_size
+            if topology_scenario is not None
+            else (100.0, 100.0)
+        ),
     )
     # State/Action dimensions
     STATE_DIM = env.get_state_dim()
@@ -1585,6 +1650,9 @@ def train_algorithm(
             )
             agents.append(agent)
 
+    if uses_gatma and show_progress:
+        print(f"[{algo_name}] GATMA device: {agents[0].device}")
+
     replay_buffer = MultiAgentReplayBuffer(
         capacity=int(
             agent_config.get(
@@ -1600,6 +1668,9 @@ def train_algorithm(
         and all(hasattr(agent, "select_action_with_log_prob") for agent in agents)
     )
     batch_size = int(agent_config.get("batch_size", provisional["batch_size"]))
+    gatma_replay_updates_per_episode = max(
+        1, int(agent_config.get("replay_updates_per_episode", 16))
+    )
     gamma = float(
         agent_config.get("kwargs", {}).get("gamma", provisional["gamma"])
     )
@@ -1731,11 +1802,7 @@ def train_algorithm(
         episode_metric_summary_time = 0.0
         episode_rollout_storage_time = 0.0
         episode_model_update_time = 0.0
-        episode_replay_update_rounds = 0.0
-        episode_actor_loss_total = 0.0
-        episode_critic_loss_total = 0.0
-        episode_mean_q_total = 0.0
-
+        pending_gatma_transition = None
         episode_done = False
         for _ in range(time_slots):
             if episode_done:
@@ -1760,6 +1827,13 @@ def train_algorithm(
             start_slot_start = time.perf_counter()
             current_joint_state = env.start_time_slot(task_dags, fixed_priorities)
             episode_start_slot_time += time.perf_counter() - start_slot_start
+            if pending_gatma_transition is not None:
+                # Bootstrap from the new task actually seen by the next action,
+                # not the exhausted DAG returned by the preceding slot's step.
+                replay_buffer.push(
+                    *pending_gatma_transition, current_joint_state, done=False
+                )
+                pending_gatma_transition = None
             slot_done = False
             while not slot_done and not episode_done:
                 action_collection_start = time.perf_counter()
@@ -1869,6 +1943,10 @@ def train_algorithm(
                         old_log_probs,
                         done=step_episode_done,
                     )
+                elif uses_gatma and slot_done and not step_episode_done:
+                    pending_gatma_transition = (
+                        current_joint_state, joint_actions, joint_rewards
+                    )
                 else:
                     replay_buffer.push(
                         current_joint_state,
@@ -1882,29 +1960,6 @@ def train_algorithm(
                 )
                 current_joint_state = next_joint_state
 
-            if uses_gatma:
-                slot_update_start = time.perf_counter()
-                slot_update_metrics = update_gatma_agents_from_buffer(
-                    agents,
-                    replay_buffer,
-                    batch_size,
-                    gamma,
-                )
-                episode_model_update_time += (
-                    time.perf_counter() - slot_update_start
-                )
-                update_rounds = slot_update_metrics["update_rounds"]
-                episode_replay_update_rounds += update_rounds
-                episode_actor_loss_total += (
-                    update_rounds * slot_update_metrics["actor_loss"]
-                )
-                episode_critic_loss_total += (
-                    update_rounds * slot_update_metrics["critic_loss"]
-                )
-                episode_mean_q_total += (
-                    update_rounds * slot_update_metrics["mean_q"]
-                )
-        
             total_slot_actions = slot_local + slot_edge
             if total_slot_actions == 0:
                 history["local_ratio"].append(0.0)
@@ -2023,13 +2078,23 @@ def train_algorithm(
             "mean_q": 0.0,
         }
         if uses_gatma:
-            completed_updates = max(episode_replay_update_rounds, 1.0)
-            maddpg_update_metrics = {
-                "update_rounds": episode_replay_update_rounds,
-                "actor_loss": episode_actor_loss_total / completed_updates,
-                "critic_loss": episode_critic_loss_total / completed_updates,
-                "mean_q": episode_mean_q_total / completed_updates,
-            }
+            for _ in range(gatma_replay_updates_per_episode):
+                round_metrics = update_gatma_agents_from_buffer(
+                    agents, replay_buffer, batch_size, gamma
+                )
+                update_rounds = round_metrics["update_rounds"]
+                if update_rounds == 0.0:
+                    break
+                maddpg_update_metrics["update_rounds"] += update_rounds
+                for metric_name in ("actor_loss", "critic_loss", "mean_q"):
+                    maddpg_update_metrics[metric_name] += (
+                        update_rounds * round_metrics[metric_name]
+                    )
+            completed_updates = maddpg_update_metrics["update_rounds"]
+            if completed_updates > 0.0:
+                for metric_name in ("actor_loss", "critic_loss", "mean_q"):
+                    maddpg_update_metrics[metric_name] /= completed_updates
+            episode_model_update_time = time.perf_counter() - model_update_start
         elif uses_shared_mappo:
             agents[0].update_from_rollout(rollout_buffer)
         elif uses_rollout_buffer:
@@ -2201,6 +2266,23 @@ def train_algorithm(
         experiment_note=experiment_note,
         experiment_seed=experiment_seed,
     )
+    if uses_gatma and checkpoint is not None:
+        checkpoint["adaptation"] = {
+            "name": "GATMA-Adapted",
+            "version": 2,
+            "paper_doi": "10.1109/TCCN.2026.3683874",
+            "agent_role": "device",
+            "graph": "connected_device_server_with_self_edges",
+            "critic_readout": "mean_pool",
+            "actor_gradient": "straight_through_argmax_other_replay_actions",
+            "action_mask": False,
+            "replay_updates_per_episode": gatma_replay_updates_per_episode,
+            "batch_size": batch_size,
+            "replay_buffer_capacity": replay_buffer.buffer.maxlen,
+            "device": str(agents[0].device),
+            "time_slots": time_slots,
+            "priority_order": list(fixed_priorities[devices[0].id]),
+        }
     return history, checkpoint
 
 
@@ -2246,6 +2328,11 @@ def evaluate_algorithm_checkpoint(
             topology_scenario.route_rectangles
             if topology_scenario is not None
             else None
+        ),
+        world_size=(
+            topology_scenario.world_size
+            if topology_scenario is not None
+            else (100.0, 100.0)
         ),
     )
     state_dim = env.get_state_dim()
@@ -2386,7 +2473,8 @@ def evaluate_algorithm_checkpoint(
                     )
                 elif uses_gatma:
                     full_joint_state = torch.as_tensor(
-                        current_joint_state, dtype=torch.float32
+                        current_joint_state, dtype=torch.float32,
+                        device=agents[0].device,
                     )
                     joint_actions = [
                         agent.select_greedy_action(full_joint_state)
@@ -2452,7 +2540,13 @@ if __name__ == "__main__":
     )
     # set_seed(experiment_seed)
     BANDWIDTH, NOISE_POWER = confirmed["bandwidth_hz"], confirmed["noise_power_dbm"]
-    topology_scenario = get_topology_scenario(args.topology_scenario)
+    topology_scenario = get_topology_scenario(
+        args.topology_scenario,
+        topology_seed=args.topology_seed,
+        server_profile=(
+            None if args.server_profile == "scenario" else args.server_profile
+        ),
+    )
     topology_metrics = compute_topology_metrics(topology_scenario)
     flat_topology_metrics = flatten_topology_metrics(topology_metrics)
 
@@ -2461,7 +2555,11 @@ if __name__ == "__main__":
         f"{topology_scenario.name} "
         f"({topology_scenario.device_count} devices / "
         f"{len(topology_scenario.server_locations)} servers, "
-        f"radius={topology_scenario.coverage_radius}m)"
+        f"world={topology_scenario.world_size[0]:g}x"
+        f"{topology_scenario.world_size[1]:g}m, "
+        f"profile={topology_scenario.server_profile}, "
+        f"radius={min(topology_scenario.coverage_radii):.2f}-"
+        f"{max(topology_scenario.coverage_radii):.2f}m)"
     )
     print(
         "Topology metrics: "
@@ -2472,11 +2570,17 @@ if __name__ == "__main__":
     )
     
     network_env = NetworkEnvironment(bandwidth=BANDWIDTH, noise_power_dbm=NOISE_POWER)
-    data_loader = KolektorSDDLoader(dataset_path="dataset/KolektorSDD/")
+    data_loader = KolektorSDDLoader(
+        dataset_path=args.dataset_path,
+        allow_dummy_data=args.allow_dummy_data,
+    )
     dataset_stats = data_loader.get_dataset_statistics()
+    topology_metrics["dataset"] = dataset_stats
     print(
-        f"Dataset images found: {dataset_stats['total_images']} "
-        f"(paper: 399; aligned={dataset_stats['is_paper_count_aligned']})"
+        f"Dataset mode: {dataset_stats['mode']} | "
+        f"images={dataset_stats['total_images']} | "
+        f"mean_pixels={dataset_stats['mean_pixels']} | "
+        f"path={dataset_stats['dataset_path']}"
     )
 
     priority_model_name = str(provisional["priority_model"]).lower()
@@ -2550,6 +2654,7 @@ if __name__ == "__main__":
     algorithms = select_algorithm_configs(
         build_algorithm_configs(
             args.graph_gat_device,
+            gatma_device=args.gatma_device,
             tuned_hyperparameters=None,
             graph_gat_lr=args.graph_gat_lr,
             graph_gat_encoder_lr=args.graph_gat_encoder_lr,
@@ -2713,6 +2818,7 @@ if __name__ == "__main__":
         fixed_baseline_algorithms=FIXED_BASELINE_ALGORITHMS,
         experiment_note=experiment_note,
         topology_scenario=topology_scenario.name,
+        output_root=args.local_output_root,
     )
     last_state_path = output_paths["last_state_path"]
     checkpoint_paths = output_paths["checkpoint_paths"]
@@ -2723,3 +2829,14 @@ if __name__ == "__main__":
         print("Model checkpoints saved:")
         for checkpoint_path in checkpoint_paths:
             print(f"  {checkpoint_path}")
+    if args.drive_artifact_root.strip():
+        synced_run = sync_completed_run(
+            output_paths["output_dir"],
+            args.drive_artifact_root,
+        )
+        print(f"Completed local run synced to Drive: {synced_run}")
+    else:
+        print(
+            "Drive sync skipped: pass --drive-artifact-root or set "
+            "TASK_OFFLOADING_DRIVE_ROOT."
+        )

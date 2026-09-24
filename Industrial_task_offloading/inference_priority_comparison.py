@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 from baselines.graph_gat_mappo import GraphGATMAPPOAgent
+from baselines.gatma import GATMAAgent
 from baselines.mappo import MAPPOAgent
 from dataset.data_loader import KolektorSDDLoader
 from environment.network_env import NetworkEnvironment
@@ -41,10 +42,13 @@ CHECKPOINT_FILES = {
     "MAPPO": "MAPPO_checkpoint.pt",
     "Dual-GAT MAPPO w/o warmup": "Graph-GAT_MAPPO_checkpoint.pt",
     "Dual-GAT MAPPO": "Graph-GAT_Warmup_MAPPO_checkpoint.pt",
+    "GATMA-Adapted": "GATMA-Adapted_checkpoint.pt",
 }
+DEFAULT_ALGORITHMS = ("MAPPO", "Dual-GAT MAPPO w/o warmup", "Dual-GAT MAPPO")
 AGENT_CLASSES = {
     "MAPPOAgent": MAPPOAgent,
     "GraphGATMAPPOAgent": GraphGATMAPPOAgent,
+    "GATMAAgent": GATMAAgent,
 }
 METRICS = (
     "reward",
@@ -60,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate saved MAPPO and Dual-GAT checkpoints with default and "
+            "Evaluate saved MAPPO, Dual-GAT and GATMA-Adapted checkpoints with default and "
             "Task-GAT-inferred priority orders."
         )
     )
@@ -68,7 +72,16 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint-dir",
         type=Path,
         default=DEFAULT_CHECKPOINT_DIR,
-        help="Directory containing the three saved policy checkpoints.",
+        help="Directory containing the selected saved policy checkpoints.",
+    )
+    parser.add_argument(
+        "--algorithms", nargs="+", choices=list(CHECKPOINT_FILES),
+        default=list(DEFAULT_ALGORITHMS),
+        help="Saved policies to evaluate; include GATMA-Adapted explicitly.",
+    )
+    parser.add_argument(
+        "--device", default="cpu",
+        help="Evaluation device for Graph-GAT and GATMA: cpu, auto or cuda.",
     )
     parser.add_argument(
         "--dataset-path",
@@ -115,14 +128,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _load_checkpoints(checkpoint_dir: Path) -> Dict[str, Dict[str, object]]:
+def _load_checkpoints(
+    checkpoint_dir: Path,
+    algorithms: Sequence[str] = DEFAULT_ALGORITHMS,
+) -> Dict[str, Dict[str, object]]:
     """Load and validate the requested checkpoint payloads."""
     checkpoints: Dict[str, Dict[str, object]] = {}
-    for display_name, filename in CHECKPOINT_FILES.items():
+    for display_name in algorithms:
+        filename = CHECKPOINT_FILES[display_name]
         checkpoint_path = checkpoint_dir / filename
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"missing checkpoint: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(
+            checkpoint_path, map_location="cpu", weights_only=True
+        )
         agent_class_name = str(checkpoint.get("agent_class", ""))
         if agent_class_name not in AGENT_CLASSES:
             raise ValueError(
@@ -136,13 +155,28 @@ def _checkpoint_scenario(
     checkpoints: Dict[str, Dict[str, object]],
 ) -> TopologyScenario:
     """Return the common topology scenario recorded by all checkpoints."""
-    scenario_names = {
-        str(checkpoint.get("topology_metrics", {}).get("name", ""))
+    topology_configs = {
+        (
+            str(checkpoint.get("topology_metrics", {}).get("name", "")),
+            int(checkpoint.get("topology_metrics", {}).get("topology_seed", 2026)),
+            str(
+                checkpoint.get("topology_metrics", {}).get(
+                    "server_profile", "uniform"
+                )
+            ),
+        )
         for checkpoint in checkpoints.values()
     }
-    if len(scenario_names) != 1 or "" in scenario_names:
-        raise ValueError(f"checkpoints disagree on topology: {scenario_names}")
-    return get_topology_scenario(scenario_names.pop())
+    if len(topology_configs) != 1:
+        raise ValueError(f"checkpoints disagree on topology: {topology_configs}")
+    scenario_name, topology_seed, server_profile = topology_configs.pop()
+    if not scenario_name:
+        raise ValueError("checkpoint topology name is missing")
+    return get_topology_scenario(
+        scenario_name,
+        topology_seed=topology_seed,
+        server_profile=server_profile,
+    )
 
 
 def _checkpoint_system_seed(
@@ -215,12 +249,17 @@ def _build_system(
     return devices, servers, network
 
 
-def _agent_config(checkpoint: Dict[str, object]) -> Dict[str, object]:
+def _agent_config(
+    checkpoint: Dict[str, object], device: str = "cpu"
+) -> Dict[str, object]:
     """Reconstruct the agent constructor configuration from a checkpoint."""
     agent_class_name = str(checkpoint["agent_class"])
+    kwargs = dict(checkpoint.get("agent_kwargs", {}))
+    if agent_class_name in {"GraphGATMAPPOAgent", "GATMAAgent"}:
+        kwargs["device"] = device
     return {
         "class": AGENT_CLASSES[agent_class_name],
-        "kwargs": dict(checkpoint.get("agent_kwargs", {})),
+        "kwargs": kwargs,
     }
 
 
@@ -233,6 +272,7 @@ def _evaluate(
     data_loader: KolektorSDDLoader,
     priority_model: torch.nn.Module,
     priority_orders: Dict[str, List[int]],
+    device: str = "cpu",
 ) -> List[Dict[str, object]]:
     """Evaluate every checkpoint/order pair under identical conditions."""
     rows: List[Dict[str, object]] = []
@@ -241,7 +281,7 @@ def _evaluate(
             for evaluation_seed in evaluation_seeds:
                 devices, servers, network = _build_system(scenario, system_seed)
                 history = evaluate_algorithm_checkpoint(
-                    agent_config=_agent_config(checkpoint),
+                    agent_config=_agent_config(checkpoint, device),
                     checkpoint=checkpoint,
                     devices=devices,
                     servers=servers,
@@ -399,7 +439,7 @@ def _print_summary(
 def main() -> None:
     """Run deterministic checkpoint inference and save the comparison."""
     args = parse_args()
-    checkpoints = _load_checkpoints(args.checkpoint_dir)
+    checkpoints = _load_checkpoints(args.checkpoint_dir, args.algorithms)
     scenario = _checkpoint_scenario(checkpoints)
     metadata_system_seed = _checkpoint_system_seed(checkpoints)
     system_seed = (
@@ -429,6 +469,7 @@ def main() -> None:
         data_loader=data_loader,
         priority_model=priority_model,
         priority_orders=priority_orders,
+        device=args.device,
     )
     summaries = _summarize(rows)
     comparisons = _compare_priorities(summaries)
@@ -442,6 +483,8 @@ def main() -> None:
         "checkpoint_metadata_system_seed": int(metadata_system_seed),
         "evaluation_seeds": list(args.evaluation_seeds),
         "episodes_per_seed": int(args.episodes_per_seed),
+        "time_slots": int(PAPER_PARAMS["confirmed"]["time_slots"]),
+        "requested_device": args.device,
         "priority_model": args.priority_model,
         "priority_model_checkpoint": get_priority_checkpoint_path(
             args.priority_model

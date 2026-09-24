@@ -92,7 +92,7 @@ def train_maddpg(
     num_episodes: int = 2000,
     batch_size: int = 64,
     gamma: float = 0.99,
-    time_slots: int = 50,
+    time_slots: int = 100,
 ) -> Dict[str, List[float]]:
     """Train e-ATN-MADDPG and return reward, delay, and energy histories.
 

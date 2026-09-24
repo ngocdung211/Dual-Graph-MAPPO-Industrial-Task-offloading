@@ -97,7 +97,7 @@ def _build_scenario_env(scenario_name: str, subslot_count: int = 20) -> DITENEnv
             compute_power=2e9,
             transmit_power=1.2,
             energy_coeff=1e-27,
-            coverage_radius=scenario.coverage_radius,
+            coverage_radius=scenario.coverage_radius_for_server(server_index),
         )
         for server_index, location in enumerate(scenario.server_locations)
     ]
@@ -111,6 +111,7 @@ def _build_scenario_env(scenario_name: str, subslot_count: int = 20) -> DITENEnv
         local_estimation_error=0.0,
         edge_estimation_error=0.0,
         route_rectangles=scenario.route_rectangles,
+        world_size=scenario.world_size,
     )
 
 
@@ -302,7 +303,12 @@ def test_parallel_branch_delay_uses_dag_makespan() -> None:
 
 @pytest.mark.parametrize(
     "scenario_name",
-    ["paper_10d_3s", "medium_20d_6s", "large_30d_9s"],
+    [
+        "paper_10d_3s",
+        "medium_20d_6s",
+        "large_30d_9s",
+        "large_industrial_30d_9s",
+    ],
 )
 def test_vectorized_connection_windows_match_sequential_reference(
     scenario_name: str,

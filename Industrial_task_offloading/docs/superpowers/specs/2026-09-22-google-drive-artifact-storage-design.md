@@ -2,9 +2,17 @@
 
 ## Status
 
-Approved in conversation on 2026-09-22. This document specifies the storage
-change only; it does not authorize or describe changes to the learning
-algorithm, reward model, hyperparameters, or GPU execution path.
+Approved in conversation on 2026-09-22 and amended on 2026-09-23. The amended
+workflow is local-first: training reads a project-local dataset replica and
+writes a complete local run before any post-run copy to Drive. This document
+specifies storage only; it does not change the learning algorithm, reward
+model, hyperparameters, or GPU execution path.
+
+> The original direct-Drive mount design below is retained as historical
+> context. The implemented runtime uses `--dataset-path`,
+> `--local-output-root`, and `--drive-artifact-root`; it does not train through
+> `/mnt/g` because Google Drive Desktop's virtual `G:` drive is not reliably
+> available to WSL.
 
 ## Problem
 

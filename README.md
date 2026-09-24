@@ -185,10 +185,14 @@ The loader expects the Kolektor Surface-Defect Dataset under:
 Industrial_task_offloading/dataset/KolektorSDD/
 ```
 
-If the dataset is absent, the project prints a warning and generates synthetic
-task parameters. This fallback is useful for tests and smoke runs, but it is not
-equivalent to a dataset-backed reproduction. The loader reports whether the
-local dataset matches the 399 images expected by the reference experiment.
+`run_comparision.py` requires this local replica by default and exits before
+training when it is missing or empty. Synthetic task parameters are available
+only for intentional smoke runs that pass `--allow-dummy-data`. The runner logs
+the resolved dataset path, real/dummy mode, input-image count, and mean pixel
+count with each experiment.
+
+Keep the Drive copy as the source of truth, but train from the project-local
+replica. Large data remains excluded by `.gitignore`.
 
 Review the KolektorSDD license and access terms before downloading or
 redistributing the data.
@@ -227,6 +231,7 @@ connectivity metrics to `topology_metrics.json`.
 
 ```bash
 python run_comparision.py \
+  --dataset-path dataset/KolektorSDD \
   --topology-scenario paper_10d_3s \
   --episodes 1 \
   --baseline-episodes 1 \
@@ -235,6 +240,16 @@ python run_comparision.py \
   --wandb-mode disabled \
   --note smoke-test
 ```
+
+Outputs and checkpoints are written to local `plots/<run-id>` first. To copy
+the completed run to Google Drive only after training finishes, add:
+
+```bash
+--drive-artifact-root 'G:\My Drive\Dual-Graph-MAPPO-Artifacts'
+```
+
+The same value can be supplied through `TASK_OFFLOADING_DRIVE_ROOT`. If final
+Drive synchronization fails, the complete local run is preserved.
 
 ### Run the configured comparison suite
 
@@ -331,4 +346,3 @@ reproduction:
 The README intentionally does not quote performance improvements because no
 versioned final benchmark outputs are currently committed. Add measured results
 only after the corresponding configuration, seeds, and artifacts are available.
-
