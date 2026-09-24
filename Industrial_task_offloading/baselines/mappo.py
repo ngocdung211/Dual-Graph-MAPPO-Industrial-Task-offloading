@@ -9,7 +9,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
 
-from utils.rl_advantages import (
+from utils.training.rl_advantages import (
     compute_gae,
     compute_one_step_td,
     minibatch_indices,

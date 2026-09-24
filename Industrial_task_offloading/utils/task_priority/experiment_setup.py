@@ -10,7 +10,7 @@ from dataset.data_loader import KolektorSDDLoader
 from environment.system_model import IndustrialDevice, Subtask, TaskDAG
 from models.gcn import TaskPriorityGCN
 from models.task_priority_gat import TaskPriorityGAT
-from utils.graph_utils import extract_task_graph_inputs
+from utils.task_priority.graph_utils import extract_task_graph_inputs
 
 
 DEFAULT_DAG_EDGES = [(1, 2), (1, 3), (2, 4), (3, 4), (4, 5)]

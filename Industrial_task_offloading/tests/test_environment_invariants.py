@@ -13,7 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from environment.diten_env import DITENEnv
 from environment.network_env import NetworkEnvironment
 from environment.system_model import EdgeServer, IndustrialDevice, Subtask, TaskDAG
-from utils.topology_scenarios_config import device_start_points, get_topology_scenario
+from utils.topology.scenarios import device_start_points, get_topology_scenario
 
 
 def _build_task_dag() -> TaskDAG:

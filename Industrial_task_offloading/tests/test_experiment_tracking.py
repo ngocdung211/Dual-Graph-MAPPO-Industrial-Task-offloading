@@ -10,7 +10,7 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from run_comparision import _build_episode_tracking_metrics
-from utils.experiment_tracking import initialize_experiment_tracker
+from utils.comparison.tracking import initialize_experiment_tracker
 
 
 class _FakeRun:

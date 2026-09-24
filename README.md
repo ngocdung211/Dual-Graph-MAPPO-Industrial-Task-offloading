@@ -220,7 +220,7 @@ python -m utils.gpu_readiness --preferred-device cuda --json
 ### Preview a topology
 
 ```bash
-python -m utils.topology_scenario_preview \
+python -m utils.topology.preview \
   --output-dir topology_preview
 ```
 

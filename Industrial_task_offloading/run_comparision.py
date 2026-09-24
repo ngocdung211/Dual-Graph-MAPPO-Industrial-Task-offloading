@@ -25,35 +25,35 @@ from environment.diten_env import DITENEnv
 from dataset.data_loader import KolektorSDDLoader
 from models.replay_buffer import MultiAgentReplayBuffer
 from models.maddpg import EpsilonATNMADDPGAgent
-from utils.comparison_algorithm_config import (
+from utils.comparison.algorithm_config import (
     FIXED_BASELINE_ALGORITHMS,
     _episodes_for_algorithm,
     build_algorithm_configs,
     select_algorithm_configs,
 )
-from utils.comparison_diagnostics import (
+from utils.comparison.diagnostics import (
     _format_diagnostic_summary,
     _should_print_diagnostics,
     _summarize_step_metrics,
     summarize_physical_compute,
 )
-from utils.comparison_evaluation import evaluate_algorithm_checkpoint
-from utils.comparison_setup import (
+from utils.comparison.evaluation import evaluate_algorithm_checkpoint
+from utils.comparison.setup import (
     build_devices_for_scenario,
     build_fixed_priorities_by_mode,
     build_priorities_by_mode,
     build_servers_for_scenario,
     set_seed,
 )
-from utils.artifact_sync import sync_completed_run
-from utils.comparison_outputs import (
+from utils.comparison.artifact_sync import sync_completed_run
+from utils.comparison.outputs import (
     build_last_training_state_line,
     build_model_checkpoint,
     flatten_topology_metrics,
     save_comparison_outputs,
 )
-from utils.priority_model_training import load_or_train_priority_model
-from utils.experiment_setup import (
+from utils.task_priority.priority_model_training import load_or_train_priority_model
+from utils.task_priority.experiment_setup import (
     TASK_PRIORITY_FEATURE_DIM,
     broadcast_priority_order,
     build_priorities,
@@ -62,21 +62,21 @@ from utils.experiment_setup import (
     get_priority_checkpoint_path,
     make_priority_dag_sampler,
 )
-from utils.experiment_tracking import (
+from utils.comparison.tracking import (
     ExperimentTracker,
     _build_episode_tracking_metrics,
     initialize_experiment_tracker,
 )
 from utils.paper_config import PAPER_PARAMS
-from utils.gatma_training import update_gatma_agents_from_buffer
-from utils.maddpg_training import update_maddpg_agents_from_buffer
-from utils.topology_graph_state import (
+from utils.training.gatma_training import update_gatma_agents_from_buffer
+from utils.training.maddpg_training import update_maddpg_agents_from_buffer
+from utils.topology.graph_state import (
     LIGHTWEIGHT_TOPOLOGY_EDGE_FEATURE_DIM,
     STANDARD_TOPOLOGY_EDGE_FEATURE_DIM,
     TopologyGraphState,
     build_topology_graph_state,
 )
-from utils.topology_scenarios_config import (
+from utils.topology.scenarios import (
     TopologyScenario,
     available_topology_scenario_names,
     compute_topology_metrics,

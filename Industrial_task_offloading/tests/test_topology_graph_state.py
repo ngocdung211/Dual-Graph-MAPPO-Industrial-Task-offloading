@@ -9,7 +9,7 @@ import torch
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from utils.topology_graph_state import build_topology_graph_state
+from utils.topology.graph_state import build_topology_graph_state
 
 
 def _make_joint_state() -> torch.Tensor:

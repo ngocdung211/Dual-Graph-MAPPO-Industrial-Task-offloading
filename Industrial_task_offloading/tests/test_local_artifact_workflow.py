@@ -12,7 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from dataset.data_loader import KolektorSDDLoader
 from run_comparision import parse_args
-from utils.comparison_outputs import flatten_topology_metrics, save_comparison_outputs
+from utils.comparison.outputs import flatten_topology_metrics, save_comparison_outputs
 
 
 def test_missing_dataset_fails_without_dummy_opt_in(tmp_path: Path) -> None:
@@ -150,7 +150,7 @@ def test_outputs_stay_under_local_root_until_sync(tmp_path: Path) -> None:
     assert local_run.is_dir()
     assert not (drive_root / "runs" / local_run.name).exists()
 
-    from utils.artifact_sync import sync_completed_run
+    from utils.comparison.artifact_sync import sync_completed_run
 
     synced_run = Path(sync_completed_run(local_run, drive_root))
 
@@ -164,7 +164,7 @@ def test_outputs_stay_under_local_root_until_sync(tmp_path: Path) -> None:
 
 def test_windows_sync_uses_named_file_parameters() -> None:
     """WSL must pass paths through PowerShell -File instead of -Command text."""
-    from utils import artifact_sync
+    from utils.comparison import artifact_sync
 
     build_command = getattr(artifact_sync, "_build_powershell_sync_command")
     command = build_command(
@@ -195,7 +195,7 @@ def test_wsl_path_conversion_passes_one_path_per_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The installed wslpath accepts one source path per invocation."""
-    from utils import artifact_sync
+    from utils.comparison import artifact_sync
 
     calls = []
 
@@ -220,3 +220,24 @@ def test_wsl_path_conversion_passes_one_path_per_process(
             {"check": True, "capture_output": True, "text": True},
         )
     ]
+
+def test_windows_sync_resolves_project_script_after_utility_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Drive sync command points to the project's PowerShell script."""
+    from utils.comparison import artifact_sync
+
+    monkeypatch.setattr(artifact_sync, "_convert_wsl_path", lambda path: str(path))
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="synced\n", stderr="")
+
+    monkeypatch.setattr(artifact_sync.subprocess, "run", fake_run)
+    artifact_sync._sync_windows_drive_from_wsl(tmp_path, r"G:\My Drive\Artifacts")
+
+    command = commands[0]
+    assert command[command.index("-File") + 1] == str(
+        PROJECT_ROOT / "scripts" / "sync_completed_run.ps1"
+    )

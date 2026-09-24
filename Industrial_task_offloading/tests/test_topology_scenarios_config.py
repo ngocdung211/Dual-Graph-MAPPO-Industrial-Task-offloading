@@ -14,13 +14,13 @@ from environment.network_env import NetworkEnvironment
 from environment.system_model import EdgeServer, IndustrialDevice
 from inference_priority_comparison import _checkpoint_scenario
 from run_comparision import build_servers_for_scenario, parse_args
-from utils.comparison_outputs import flatten_topology_metrics
+from utils.comparison.outputs import flatten_topology_metrics
 from utils.paper_config import PAPER_PARAMS
-from utils.topology_scenarios_config import (
+from utils.topology.scenarios import (
     compute_topology_metrics,
     get_topology_scenario,
 )
-from utils.topology_scenario_preview import write_previews
+from utils.topology.preview import write_previews
 
 
 def test_large_industrial_topology_uses_rectangular_180_by_120_world() -> None:

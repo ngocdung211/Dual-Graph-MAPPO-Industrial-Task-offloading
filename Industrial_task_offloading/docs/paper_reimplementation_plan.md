@@ -58,7 +58,7 @@ Goal: test whether the topology encoder helps more when it starts from useful to
 Assumption: pretraining should learn connection feasibility and topology quality from graph states before PPO begins. PPO then either freezes that encoder or fine-tunes it.
 
 1. [ ] **Define the Topology-GAT pretraining target**
-   - Input: `TopologyGraphState` from `utils/topology_graph_state.py`.
+   - Input: `TopologyGraphState` from `utils/topology/graph_state.py`.
    - Encoder: `models/topology_gat.py::TopologyGATEncoder`.
    - Minimal supervised target:
      - per-device feasible server mask from edge feature `is_connected`;
@@ -134,7 +134,7 @@ Goal: test whether Graph-GAT Mask MAPPO only shows value when topology is comple
    - Verify:
      - old `paper_10d_3s` results are reproducible with the new config path.
      - Scenario source: `utils/topology_scenarios.py`.
-     - Preview source: `utils/topology_scenario_preview.py`.
+     - Preview source: `utils/topology/preview.py`.
      - Runner selection: `run_comparision.py --topology-scenario <name>`.
 
 2. [x] **Add topology complexity diagnostics**
@@ -787,8 +787,8 @@ Historical note: this queue recorded the earlier paper-reimplementation path. Us
     - Goal: Compare GCN priority extraction against a GAT priority extractor without removing the original GCN baseline.
     - Files touched:
       - `models/task_priority_gat.py`
-      - `utils/experiment_setup.py`
-      - `utils/priority_model_training.py`
+      - `utils/task_priority/experiment_setup.py`
+      - `utils/task_priority/priority_model_training.py`
       - `run_comparision.py`
       - `main.py`
       - `tests/test_task_priority_gat.py`
@@ -845,7 +845,7 @@ Historical note: this queue is preserved for traceability. Use the 2026-07-08 ac
 3. [x] **Implement minimal topology graph builder**
    - Goal: Convert existing flat joint state into graph tensors without touching env internals.
    - Candidate file:
-     - `utils/topology_graph_state.py`
+     - `utils/topology/graph_state.py`
    - Rule:
      - read only the current `joint_state`, `num_devices`, and `num_servers`.
      - do not change `DITENEnv._get_joint_state`.

@@ -45,7 +45,7 @@ with three distinct modules, 15 routes, 30 devices, and nine servers. Module A
 has grouped cells, B has staggered horizontal cells, and C has mixed vertical
 cells. Each route carries two devices starting at opposite corners. Every
 training episode resets both devices to those same corners and replays the
-route from its beginning. In `utils/topology_scenarios_config.py`, edit
+route from its beginning. In `utils/topology/scenarios.py`, edit
 `modular_cell_routes()` to change
 `rectangle(left, bottom, right, top)` bounds, and edit the named scenario's
 `server_locations` and `coverage_radii` to change server positions and radii.
@@ -60,7 +60,7 @@ radius and the profile rules above. Plot the editable configuration from the
 `Industrial_task_offloading` directory with:
 
 ```bash
-python -m utils.topology_scenario_preview \
+python -m utils.topology.preview \
   --scenarios modular_cells_30d_9s \
   --server-profile scenario \
   --output-dir results/topology_preview/modular_cells
@@ -78,13 +78,18 @@ Drive synchronization. The learned model roles are unchanged: the frozen
 Task-GAT produces task priority and the trainable topology policy/critic
 consumes connectivity. Storage and topology changes do not add a neural-network
 role. `run_comparision.py` keeps the CLI, action collection, agent updates,
-training loop, and run orchestration. `utils/comparison_setup.py` owns
-seeding and scenario construction; `utils/comparison_algorithm_config.py`
-builds agent settings; `utils/comparison_diagnostics.py` and
-`utils/experiment_tracking.py` format diagnostics and episode records; and
-`utils/comparison_evaluation.py` evaluates saved checkpoints. The runner
+training loop, and run orchestration. `utils/comparison/setup.py` owns
+seeding and scenario construction; `utils/comparison/algorithm_config.py`
+builds agent settings; `utils/comparison/diagnostics.py` and
+`utils/comparison/tracking.py` format diagnostics and episode records; and
+`utils/comparison/evaluation.py` evaluates saved checkpoints. The runner
 imports these helpers, so this module split does not change model roles,
-training order, or configured hyperparameters.
+training order, or configured hyperparameters. The remaining utilities are
+grouped under `utils/topology/` (scenarios and graph state),
+`utils/task_priority/` (DAG and priority model helpers),
+`utils/training/` (agent update helpers), and `utils/reporting/`
+(plots and summaries). Shared paper parameters, metrics, and GPU readiness
+remain directly under `utils/`.
 
 ### Local-first dataset and artifact flow
 
@@ -424,7 +429,7 @@ actor loss = PPO clipped objective - entropy bonus
 critic loss = MSE(V(current), target)
 ```
 
-`utils/rl_advantages.py` also provides GAE(λ), selected by `--use-gae` and
+`utils/training/rl_advantages.py` also provides GAE(λ), selected by `--use-gae` and
 applied identically to every MAPPO-family agent:
 
 ```text
@@ -577,7 +582,7 @@ gradients are combined in the same backward pass.
 run_comparision.py
   algorithm name/config and edge_feature_dim=7 or 3
         ↓
-utils/topology_graph_state.py :: build_topology_graph_state()
+utils/topology/graph_state.py :: build_topology_graph_state()
   [D,state_dim] → nodes [D+S,14] and edges [2DS,7] or [DS,3]
         ↓
 baselines/graph_gat_mappo.py :: GraphGATMAPPOAgent
@@ -591,11 +596,11 @@ models/graph_gat_heads.py
 baselines/graph_gat_rollout.py
   on-policy graph transition and rollout buffer
 
-baselines/gatma.py + utils/gatma_training.py
+baselines/gatma.py + utils/training/gatma_training.py
   shared immutable topology batch + separate 4-head Actor-GAT/Q-Critic per device
   + replay/target updates
 
-utils/rl_advantages.py
+utils/training/rl_advantages.py
   one-step TD, GAE(lambda), full-batch normalization, minibatch indices
         ↓
 baselines/mappo.py, baselines/shared_mappo.py, baselines/graph_gat_mappo.py

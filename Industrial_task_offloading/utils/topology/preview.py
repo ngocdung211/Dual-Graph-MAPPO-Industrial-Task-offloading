@@ -12,10 +12,10 @@ from typing import Dict, List, Optional, Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 
-PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from utils.topology_scenarios_config import (
+from utils.topology.scenarios import (
     TopologyScenario,
     build_topology_scenarios,
     compute_topology_metrics,

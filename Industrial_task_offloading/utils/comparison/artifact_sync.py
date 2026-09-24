@@ -59,7 +59,7 @@ def _copy_run_atomically(source: Path, runs_root: Path) -> Path:
 def _sync_windows_drive_from_wsl(source: Path, drive_root: str) -> str:
     """Use Windows PowerShell to copy from WSL into a Drive Desktop path."""
     script_path = (
-        Path(__file__).resolve().parents[1]
+        Path(__file__).resolve().parents[2]
         / "scripts"
         / "sync_completed_run.ps1"
     )

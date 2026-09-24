@@ -113,7 +113,7 @@ def load_or_train_priority_model(
         epoch_loss = 0.0
         for _ in range(samples_per_epoch):
             task_dag = dag_sampler()
-            from utils.graph_utils import extract_task_graph_inputs
+            from utils.task_priority.graph_utils import extract_task_graph_inputs
 
             features, adjacency = extract_task_graph_inputs(task_dag)
             y = build_task_priority_targets(task_dag)

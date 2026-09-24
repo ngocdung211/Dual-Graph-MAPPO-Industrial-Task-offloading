@@ -12,15 +12,15 @@ from dataset.data_loader import KolektorSDDLoader
 from environment.diten_env import DITENEnv
 from environment.network_env import NetworkEnvironment
 from environment.system_model import EdgeServer, IndustrialDevice
-from utils.comparison_diagnostics import _summarize_step_metrics
-from utils.comparison_setup import build_fixed_priorities_by_mode, set_seed
-from utils.experiment_setup import (
+from utils.comparison.diagnostics import _summarize_step_metrics
+from utils.comparison.setup import build_fixed_priorities_by_mode, set_seed
+from utils.task_priority.experiment_setup import (
     broadcast_priority_order,
     generate_task_dags_for_episode,
 )
 from utils.paper_config import PAPER_PARAMS
-from utils.topology_graph_state import build_topology_graph_state
-from utils.topology_scenarios_config import TopologyScenario
+from utils.topology.graph_state import build_topology_graph_state
+from utils.topology.scenarios import TopologyScenario
 
 
 def evaluate_algorithm_checkpoint(

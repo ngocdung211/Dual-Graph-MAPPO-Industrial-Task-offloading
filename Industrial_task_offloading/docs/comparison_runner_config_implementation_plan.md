@@ -138,7 +138,7 @@ assert configs["Shared MAPPO"]["kwargs"]["entropy_coef"] != 0.005
 ### Task 3: Verify provenance and update active documentation
 
 **Files:**
-- Modify: `run_comparision.py`, `utils/comparison_outputs.py`.
+- Modify: `run_comparision.py`, `utils/comparison/outputs.py`.
 - Test: `tests/test_comparison_diagnostics.py`, `tests/test_experiment_tracking.py`, `tests/test_local_artifact_workflow.py`.
 - Modify: `docs/dual_gat_mappo_architecture.md`, `docs/wandb_tracking.md`, `note.txt`.
 
@@ -162,7 +162,7 @@ assert row["maddpg_updates_per_episode"] == 16
 ```
 
 ```python
-# utils/comparison_outputs.py: new optional parameters at the end of
+# utils/comparison/outputs.py: new optional parameters at the end of
 # build_last_training_state_line(...).
 agent_kwargs: Optional[Dict[str, object]] = None,
 reward_weights: Optional[Dict[str, float]] = None,

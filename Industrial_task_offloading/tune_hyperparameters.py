@@ -32,7 +32,7 @@ from run_comparision import (
     summarize_physical_compute,
     train_algorithm,
 )
-from utils.experiment_setup import (
+from utils.task_priority.experiment_setup import (
     TASK_PRIORITY_FEATURE_DIM,
     build_priorities,
     build_task_priority_model,
@@ -40,8 +40,8 @@ from utils.experiment_setup import (
     make_priority_dag_sampler,
 )
 from utils.paper_config import PAPER_PARAMS
-from utils.priority_model_training import load_or_train_priority_model
-from utils.topology_scenarios_config import (
+from utils.task_priority.priority_model_training import load_or_train_priority_model
+from utils.topology.scenarios import (
     TopologyScenario,
     available_topology_scenario_names,
     compute_topology_metrics,

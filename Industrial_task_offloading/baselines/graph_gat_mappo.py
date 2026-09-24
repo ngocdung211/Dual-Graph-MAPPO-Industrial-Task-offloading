@@ -20,13 +20,13 @@ from models.graph_gat_heads import (
 )
 from models.topology_gat import TopologyGATEncoder
 from utils.gpu_readiness import resolve_torch_device
-from utils.rl_advantages import (
+from utils.training.rl_advantages import (
     compute_gae,
     compute_one_step_td,
     minibatch_indices,
     normalize_advantages,
 )
-from utils.topology_graph_state import TopologyGraphState
+from utils.topology.graph_state import TopologyGraphState
 
 
 __all__ = [

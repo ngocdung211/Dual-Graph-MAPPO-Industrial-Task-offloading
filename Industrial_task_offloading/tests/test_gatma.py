@@ -19,8 +19,8 @@ from environment.system_model import EdgeServer, IndustrialDevice
 from inference_priority_comparison import _agent_config, _load_checkpoints
 from models.replay_buffer import MultiAgentReplayBuffer
 import run_comparision as runner
-import utils.gatma_training as gatma_training
-from utils.gatma_training import update_gatma_agents_from_buffer
+import utils.training.gatma_training as gatma_training
+from utils.training.gatma_training import update_gatma_agents_from_buffer
 
 
 def _state():

@@ -14,9 +14,9 @@ from environment.diten_env import DITENEnv
 from models.replay_buffer import MultiAgentReplayBuffer
 from models.maddpg import EpsilonATNMADDPGAgent
 from dataset.data_loader import KolektorSDDLoader
-from utils.plotter import DITENPlotter
-from utils.priority_model_training import load_or_train_priority_model
-from utils.experiment_setup import (
+from utils.reporting.plotter import DITENPlotter
+from utils.task_priority.priority_model_training import load_or_train_priority_model
+from utils.task_priority.experiment_setup import (
     TASK_PRIORITY_FEATURE_DIM,
     broadcast_priority_order,
     build_priorities,
@@ -26,7 +26,7 @@ from utils.experiment_setup import (
     make_priority_dag_sampler,
 )
 from utils.paper_config import PAPER_PARAMS
-from utils.maddpg_training import update_maddpg_agents_from_buffer
+from utils.training.maddpg_training import update_maddpg_agents_from_buffer
 
 import random
 

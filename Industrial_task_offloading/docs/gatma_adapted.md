@@ -12,7 +12,7 @@ Three application layers reuse the existing project structure:
 1. Environment/data: `environment/` and `dataset/` provide devices, servers,
    five-subtask DAGs, observations, shared rewards and execution constraints.
 2. Algorithm: `baselines/gatma.py` builds independent local actors and global
-   Q critics; `utils/gatma_training.py` performs synchronized replay updates.
+   Q critics; `utils/training/gatma_training.py` performs synchronized replay updates.
 3. Experiment/output: `run_comparision.py` selects, trains and checkpoints the
    baseline; `inference_priority_comparison.py` evaluates saved policies.
 

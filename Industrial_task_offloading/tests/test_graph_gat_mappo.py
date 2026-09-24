@@ -19,7 +19,7 @@ from run_comparision import (
     select_algorithm_configs,
 )
 from utils.paper_config import PAPER_PARAMS
-from utils.topology_graph_state import build_topology_graph_state
+from utils.topology.graph_state import build_topology_graph_state
 
 
 def _make_joint_state(offset: float = 0.0) -> torch.Tensor:

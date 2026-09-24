@@ -21,7 +21,7 @@ from run_comparision import (
     _summarize_step_metrics,
     build_algorithm_configs,
 )
-from utils.comparison_outputs import (
+from utils.comparison.outputs import (
     _save_model_checkpoint,
     build_last_training_state_line,
     build_model_checkpoint,
@@ -389,21 +389,21 @@ def test_save_model_checkpoint_writes_safe_filename(tmp_path) -> None:
     ("module_name", "function_names"),
     [
         (
-            "utils.comparison_algorithm_config",
+            "utils.comparison.algorithm_config",
             ("build_algorithm_configs", "select_algorithm_configs", "_episodes_for_algorithm"),
         ),
         (
-            "utils.comparison_diagnostics",
+            "utils.comparison.diagnostics",
             (
                 "summarize_physical_compute",
                 "_summarize_step_metrics",
                 "_format_diagnostic_summary",
             ),
         ),
-        ("utils.experiment_tracking", ("_build_episode_tracking_metrics",)),
-        ("utils.comparison_evaluation", ("evaluate_algorithm_checkpoint",)),
+        ("utils.comparison.tracking", ("_build_episode_tracking_metrics",)),
+        ("utils.comparison.evaluation", ("evaluate_algorithm_checkpoint",)),
         (
-            "utils.comparison_setup",
+            "utils.comparison.setup",
             ("set_seed", "build_servers_for_scenario", "build_devices_for_scenario"),
         ),
     ],
@@ -413,3 +413,18 @@ def test_runner_reexports_utility_functions(module_name, function_names):
     module = importlib.import_module(module_name)
     for function_name in function_names:
         assert getattr(runner, function_name) is getattr(module, function_name)
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "utils.comparison.artifact_sync",
+        "utils.comparison.outputs",
+        "utils.topology.scenarios",
+        "utils.task_priority.experiment_setup",
+        "utils.training.rl_advantages",
+        "utils.reporting.plotter2",
+    ],
+)
+def test_relocated_utility_module_imports(module_name):
+    """Core helpers remain importable from their responsibility packages."""
+    assert importlib.import_module(module_name) is not None

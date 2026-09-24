@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import List
 
-from utils.topology_graph_state import TopologyGraphState
+from utils.topology.graph_state import TopologyGraphState
 
 
 @dataclass(frozen=True)

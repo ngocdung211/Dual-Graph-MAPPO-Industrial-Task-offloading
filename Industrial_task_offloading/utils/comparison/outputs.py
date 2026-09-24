@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 
-from utils.plotter2 import DITENPlotter2
+from utils.reporting.plotter2 import DITENPlotter2
 
 
 def flatten_topology_metrics(topology_metrics: Dict[str, object]) -> Dict[str, object]:

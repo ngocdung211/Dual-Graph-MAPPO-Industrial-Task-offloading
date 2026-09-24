@@ -8,8 +8,8 @@ import torch
 
 from baselines.scheduling_baselines import BaselineSchedulers
 from environment.system_model import EdgeServer, IndustrialDevice, TaskDAG
-from utils.experiment_setup import broadcast_priority_order, build_priorities
-from utils.topology_scenarios_config import TopologyScenario, device_start_points
+from utils.task_priority.experiment_setup import broadcast_priority_order, build_priorities
+from utils.topology.scenarios import TopologyScenario, device_start_points
 
 
 def set_seed(seed: int = 42) -> None:

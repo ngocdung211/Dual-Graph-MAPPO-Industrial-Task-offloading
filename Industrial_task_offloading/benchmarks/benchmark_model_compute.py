@@ -20,7 +20,7 @@ from baselines.graph_gat_mappo import GraphGATMAPPOAgent
 from baselines.gatma import GATMAAgent
 from baselines.mappo import MAPPOAgent
 from models.maddpg import EpsilonATNMADDPGAgent
-from utils.topology_graph_state import (
+from utils.topology.graph_state import (
     LIGHTWEIGHT_TOPOLOGY_EDGE_FEATURE_DIM,
     STANDARD_TOPOLOGY_EDGE_FEATURE_DIM,
     build_topology_graph_state,

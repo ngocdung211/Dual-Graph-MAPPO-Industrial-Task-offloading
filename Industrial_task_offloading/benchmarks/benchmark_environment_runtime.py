@@ -19,7 +19,7 @@ from environment.diten_env import DITENEnv
 from environment.network_env import NetworkEnvironment
 from environment.system_model import EdgeServer, IndustrialDevice, Subtask, TaskDAG
 from utils.paper_config import PAPER_PARAMS
-from utils.topology_scenarios_config import (
+from utils.topology.scenarios import (
     available_topology_scenario_names,
     device_start_points,
     get_topology_scenario,
