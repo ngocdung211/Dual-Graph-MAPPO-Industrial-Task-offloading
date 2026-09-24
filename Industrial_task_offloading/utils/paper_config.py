@@ -13,7 +13,7 @@ PAPER_PARAMS: Dict[str, Dict[str, float]] = {
         # Topology / scenario
         "num_devices": 10,
         "num_servers": 3,
-        "time_slots": 50,
+        "time_slots": 100,
         "slot_duration_s": 1.0,
         "device_speed_mps": 1.0,
         "coverage_radius_m": 12.0,
@@ -59,7 +59,7 @@ PAPER_PARAMS: Dict[str, Dict[str, float]] = {
         "server_compute_power_max_ghz": 2.5,
         "device_compute_power_min_ghz": 0.8,
         "device_compute_power_max_ghz": 1.2,
-        "task_cpu_cycle_scale": 1.4,
+        "task_cpu_cycle_scale": 1.35,
         "maddpg_actor_lr": 0.0001,
         "maddpg_critic_lr": 0.0001,
         "maddpg_hidden_dim": 64,

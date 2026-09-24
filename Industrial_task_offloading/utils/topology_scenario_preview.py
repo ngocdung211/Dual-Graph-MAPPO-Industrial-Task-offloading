@@ -7,7 +7,7 @@ import json
 import os
 import pathlib
 import sys
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,13 +24,12 @@ from utils.topology_scenarios_config import (
 )
 
 
-WORLD_MIN = 0.0
-WORLD_MAX = 100.0
-
-
-def build_preview_scenarios() -> List[TopologyScenario]:
-    """Build the three topology candidates requested for review."""
-    return build_topology_scenarios()
+def build_preview_scenarios(
+    topology_seed: int = 2026,
+    server_profile: Optional[str] = None,
+) -> List[TopologyScenario]:
+    """Build topology candidates requested for review."""
+    return build_topology_scenarios(topology_seed, server_profile)
 
 
 def _route_to_array(route: Sequence[Sequence[float]]) -> np.ndarray:
@@ -93,26 +92,34 @@ def plot_scenario(scenario: TopologyScenario, output_path: str) -> None:
     server_locations = np.asarray(scenario.server_locations, dtype=float)
     start_points = _device_start_points(scenario)
 
-    fig, ax = plt.subplots(figsize=(7, 7), dpi=300)
-    ax.set_xlim(WORLD_MIN, WORLD_MAX)
-    ax.set_ylim(WORLD_MIN, WORLD_MAX)
+    world_width, world_height = scenario.world_size
+    fig_width = 8.5
+    fig_height = max(5.5, fig_width * world_height / world_width)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=300)
+    ax.set_xlim(0.0, world_width)
+    ax.set_ylim(0.0, world_height)
     ax.set_aspect("equal", adjustable="box")
-    coordinate_ticks = np.arange(WORLD_MIN, WORLD_MAX + 1.0, 20.0)
-    ax.set_xticks(coordinate_ticks)
-    ax.set_yticks(coordinate_ticks)
+    ax.set_xticks(np.arange(0.0, world_width + 1.0, 20.0))
+    ax.set_yticks(np.arange(0.0, world_height + 1.0, 20.0))
+    ax.set_xlabel("Factory floor x (m)")
+    ax.set_ylabel("Factory floor y (m)")
+    ax.set_title(
+        f"{scenario.name} · {scenario.server_profile} coverage · "
+        f"seed {scenario.topology_seed}"
+    )
     ax.tick_params(axis="both", direction="out", labelsize=9, length=3.5, width=0.8)
     for spine in ax.spines.values():
         spine.set_linewidth(0.8)
 
-    route_color = "#34495e"
+    zone_colors = ("#566573", "#7d6608", "#6c5b7b")
     for route_index, route in enumerate(scenario.route_rectangles):
         route_array = _route_to_array(route)
         ax.plot(
             route_array[:, 0],
             route_array[:, 1],
-            color=route_color,
-            linewidth=1.0,
-            alpha=0.55,
+            color=zone_colors[min(route_index // 5, len(zone_colors) - 1)],
+            linewidth=1.15,
+            alpha=0.62,
         )
         route_points = np.asarray(route, dtype=float)
         first_device_label = f"D{route_index * 2 + 1}"
@@ -126,17 +133,18 @@ def plot_scenario(scenario: TopologyScenario, output_path: str) -> None:
 
     server_color = "#2878B5"
     for server_index, server_location in enumerate(server_locations, start=1):
+        coverage_radius = scenario.coverage_radius_for_server(server_index - 1)
         circle = plt.Circle(
             server_location,
-            scenario.coverage_radius,
+            coverage_radius,
             color=server_color,
-            alpha=0.16,
+            alpha=0.10,
             linewidth=1.0,
             fill=True,
         )
         outline = plt.Circle(
             server_location,
-            scenario.coverage_radius,
+            coverage_radius,
             color=server_color,
             alpha=0.85,
             linewidth=1.1,
@@ -157,7 +165,7 @@ def plot_scenario(scenario: TopologyScenario, output_path: str) -> None:
         ax.text(
             server_location[0],
             server_location[1] + 2.2,
-            f"S{server_index}",
+            f"S{server_index} ({coverage_radius:.1f}m)",
             fontsize=8,
             fontweight="bold",
             ha="center",
@@ -182,11 +190,25 @@ def plot_scenario(scenario: TopologyScenario, output_path: str) -> None:
     plt.close(fig)
 
 
-def write_previews(output_dir: str) -> Dict[str, object]:
+def write_previews(
+    output_dir: str,
+    topology_seed: int = 2026,
+    server_profile: Optional[str] = None,
+    scenario_names: Optional[Sequence[str]] = None,
+) -> Dict[str, object]:
     """Write PNG previews and one JSON metrics file."""
     os.makedirs(output_dir, exist_ok=True)
     metrics = {}
-    for scenario in build_preview_scenarios():
+    scenarios = build_preview_scenarios(topology_seed, server_profile)
+    if scenario_names is not None:
+        selected_names = set(scenario_names)
+        scenarios = [
+            scenario for scenario in scenarios if scenario.name in selected_names
+        ]
+        missing_names = selected_names - {scenario.name for scenario in scenarios}
+        if missing_names:
+            raise ValueError(f"unknown preview scenarios: {sorted(missing_names)}")
+    for scenario in scenarios:
         png_path = os.path.join(output_dir, f"{scenario.name}.png")
         plot_scenario(scenario, png_path)
         metrics[scenario.name] = compute_scenario_metrics(scenario)
@@ -206,11 +228,36 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         # default=os.path.join("results", "topology_preview"),
-        default='archive/topology_preview',
+        default="archive/topology_preview",
         help="Directory for generated PNG and JSON files.",
     )
+    parser.add_argument(
+        "--topology-seed",
+        type=int,
+        default=2026,
+        help="Seed for reproducible per-server coverage sampling.",
+    )
+    parser.add_argument(
+        "--server-profile",
+        choices=("scenario", "uniform", "heterogeneous", "stress"),
+        default="scenario",
+        help="Coverage profile used by generated previews.",
+    )
+    parser.add_argument(
+        "--scenarios",
+        nargs="+",
+        default=None,
+        help="Optional subset of named topology scenarios to render.",
+    )
     args = parser.parse_args()
-    result = write_previews(args.output_dir)
+    result = write_previews(
+        args.output_dir,
+        topology_seed=args.topology_seed,
+        server_profile=(
+            None if args.server_profile == "scenario" else args.server_profile
+        ),
+        scenario_names=args.scenarios,
+    )
     print(json.dumps(result, indent=2, ensure_ascii=True))
 
 
