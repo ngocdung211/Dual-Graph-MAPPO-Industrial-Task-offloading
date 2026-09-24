@@ -273,6 +273,27 @@ def test_runner_uses_sixteen_episode_updates_and_continuous_replay(
     assert all(np.isfinite(values).all() for values in evaluation.values())
 
 
+def test_gatma_model_settings_come_from_config(monkeypatch) -> None:
+    """The comparison builder must use the configured GATMA settings."""
+    provisional = runner.PAPER_PARAMS["provisional_table2_needed"]
+    monkeypatch.setitem(provisional, "gatma_actor_lr", 2e-4)
+    monkeypatch.setitem(provisional, "gatma_batch_size", 256)
+
+    config = runner.build_algorithm_configs(gatma_device="cpu")["GATMA-Adapted"]
+
+    assert config["batch_size"] == 256
+    assert config["replay_buffer_capacity"] == provisional[
+        "gatma_replay_buffer_capacity"
+    ]
+    assert config["replay_updates_per_episode"] == provisional[
+        "gatma_replay_updates_per_episode"
+    ]
+    assert config["kwargs"]["actor_lr"] == pytest.approx(2e-4)
+    assert config["kwargs"]["critic_lr"] == provisional["gatma_critic_lr"]
+    assert config["kwargs"]["gamma"] == provisional["gatma_gamma"]
+    assert config["kwargs"]["device"] == "cpu"
+
+
 def test_legacy_name_selects_one_adapted_baseline():
     configs = runner.build_algorithm_configs(gatma_device="cpu")
     selected = runner.select_algorithm_configs(configs, ["GATMA", "GATMA-Adapted"])

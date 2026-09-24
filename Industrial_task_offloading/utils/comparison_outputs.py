@@ -40,17 +40,6 @@ def flatten_topology_metrics(topology_metrics: Dict[str, object]) -> Dict[str, o
     physical_compute = topology_metrics.get("physical_compute")
     if physical_compute is not None:
         flattened.update(physical_compute)
-    hyperparameter_profile = topology_metrics.get("hyperparameter_profile")
-    if hyperparameter_profile is not None:
-        flattened.update(
-            {
-                "hyperparameter_profile": hyperparameter_profile["name"],
-                "hyperparameter_profile_path": hyperparameter_profile["path"],
-                "hyperparameter_effective_failed_offload_penalty": (
-                    hyperparameter_profile["effective_failed_offload_penalty"]
-                ),
-            }
-        )
     dataset = topology_metrics.get("dataset")
     if dataset is not None:
         flattened.update(
@@ -134,8 +123,12 @@ def build_last_training_state_line(
     topology_metrics: Optional[Dict[str, object]] = None,
     experiment_note: str = "",
     experiment_seed: Optional[int] = None,
+    agent_kwargs: Optional[Dict[str, object]] = None,
+    reward_weights: Optional[Dict[str, float]] = None,
+    maddpg_updates_per_episode: Optional[int] = None,
+    task_priority: Optional[str] = None,
 ) -> Dict[str, object]:
-    """Build one flat JSONL row for the final training state of one model."""
+    """Build one final training row with optional effective run settings."""
 
     def last_value(metric_name: str) -> float:
         values = history.get(metric_name, [])
@@ -176,6 +169,14 @@ def build_last_training_state_line(
         row["experiment_seed"] = int(experiment_seed)
     if topology_metrics is not None:
         row.update(flatten_topology_metrics(topology_metrics))
+    if agent_kwargs is not None:
+        row["agent_kwargs"] = dict(agent_kwargs)
+    if reward_weights is not None:
+        row["reward_weights"] = dict(reward_weights)
+    if maddpg_updates_per_episode is not None:
+        row["maddpg_updates_per_episode"] = int(maddpg_updates_per_episode)
+    if task_priority is not None:
+        row["task_priority"] = task_priority
     return row
 
 
@@ -194,6 +195,7 @@ def build_model_checkpoint(
     topology_metrics: Optional[Dict[str, object]] = None,
     experiment_note: str = "",
     experiment_seed: Optional[int] = None,
+    reward_weights: Optional[Dict[str, float]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Build a serializable checkpoint payload for a trainable algorithm."""
     agent_states = [
@@ -232,6 +234,8 @@ def build_model_checkpoint(
         checkpoint["experiment_note"] = experiment_note
     if experiment_seed is not None:
         checkpoint["experiment_seed"] = int(experiment_seed)
+    if reward_weights is not None:
+        checkpoint["reward_weights"] = dict(reward_weights)
     if topology_metrics is not None:
         checkpoint["topology_metrics"] = topology_metrics
     if graph_node_feature_dim is not None or graph_edge_feature_dim is not None:

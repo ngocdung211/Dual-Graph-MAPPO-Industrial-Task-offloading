@@ -26,7 +26,6 @@ placing a key in source code. Never commit the API key.
 python run_comparision.py `
   --topology-scenario medium_20d_6s `
   --episodes 3 `
-  --baseline-episodes 1 `
   --graph-gat-device cuda `
   --wandb-mode online `
   --wandb-project industrial-task-offloading `
@@ -34,8 +33,8 @@ python run_comparision.py `
   --note medium-gpu-smoke
 ```
 
-`--wandb-entity` is optional. Use it when the run belongs to a W&B team rather
-than the account configured by `wandb login`.
+Set `wandb_entity` in `utils/paper_config.py` when runs belong to a W&B
+team rather than the account configured by `wandb login`.
 
 ## Offline monitoring
 
@@ -45,7 +44,6 @@ Use offline mode when the training machine cannot reach W&B reliably:
 python run_comparision.py `
   --topology-scenario large_30d_9s `
   --episodes 3 `
-  --baseline-episodes 1 `
   --graph-gat-device cuda `
   --wandb-mode offline `
   --wandb-project industrial-task-offloading `
@@ -92,7 +90,6 @@ CPU:
 python run_comparision.py `
   --topology-scenario large_30d_9s `
   --episodes 20 `
-  --baseline-episodes 1 `
   --algorithms "Graph-GAT MAPPO" `
   --graph-gat-device cpu `
   --wandb-mode online `
@@ -107,7 +104,6 @@ CUDA:
 python run_comparision.py `
   --topology-scenario large_30d_9s `
   --episodes 20 `
-  --baseline-episodes 1 `
   --algorithms "Graph-GAT MAPPO" `
   --graph-gat-device cuda `
   --wandb-mode online `
@@ -121,58 +117,15 @@ Compare medians over episodes 2-20 for `training/episode_seconds`,
 `runtime/action_collection_seconds`, `runtime/rollout_storage_seconds`, and
 `runtime/model_update_seconds`.
 
-## Graph-GAT 1000-episode tuning
+## Model hyperparameters for new comparisons
 
-Use `medium_20d_6s` as the tuning map. Keep `paper_10d_3s` and
-`large_30d_9s` as transfer checks so hyperparameters are not selected on every
-evaluation map independently.
-
-First run the unchanged 1000-episode control:
-
-```powershell
-python run_comparision.py `
-  --topology-scenario medium_20d_6s `
-  --episodes 1000 `
-  --algorithms "Mask-MAPPO" "Graph-GAT Warmup Mask MAPPO" `
-  --graph-gat-device cuda `
-  --wandb-mode online `
-  --wandb-project industrial-task-offloading `
-  --wandb-entity ObjectPromptDA `
-  --wandb-group graph-gat-1000-control-medium-seed75 `
-  --note graph-gat-1000-control-medium
-```
-
-Then run the first stability-oriented Graph-GAT candidate:
-
-```powershell
-python run_comparision.py `
-  --topology-scenario medium_20d_6s `
-  --episodes 1000 `
-  --algorithms "Graph-GAT Warmup Mask MAPPO" `
-  --graph-gat-device cuda `
-  --graph-gat-lr 0.00008 `
-  --graph-gat-encoder-lr 0.00003 `
-  --graph-gat-clip-param 0.15 `
-  --graph-gat-ppo-epochs 4 `
-  --graph-gat-entropy-coef 0.005 `
-  --graph-gat-value-loss-coef 0.5 `
-  --graph-gat-max-grad-norm 0.5 `
-  --graph-gat-warmup-episodes 20 `
-  --graph-gat-warmup-updates-per-step 2 `
-  --graph-gat-warmup-lr 0.0003 `
-  --wandb-mode online `
-  --wandb-project industrial-task-offloading `
-  --wandb-entity ObjectPromptDA `
-  --wandb-group graph-gat-1000-tuned-v1-medium-seed75 `
-  --note graph-gat-1000-tuned-v1-medium
-```
-
-This candidate reduces encoder drift with a smaller encoder learning rate and
-gradient clipping. It spreads roughly the same auxiliary-update budget over 20
-episodes instead of concentrating it in the first five. Select it using the
-mean and standard deviation of the final 100 episodes, not episode 1000 alone.
-If it beats the control, reuse the exact same values on the paper and large
-maps without per-map retuning.
+Edit and version the model settings in `utils/paper_config.py` before launching
+an experiment. The runner no longer accepts per-model tuning flags or the old
+`--hyperparameters-dir` profile. Record the code revision and effective agent
+settings with each run; W&B and local outputs save the latter. To compare a
+new candidate, change the config in a separate code revision and run the same
+model list, topology, and seed budget. Historical tuning commands belong to
+older results and should not be reused for the current `-1` penalty setting.
 
 ## Disable tracking
 

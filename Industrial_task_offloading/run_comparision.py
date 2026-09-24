@@ -5,9 +5,7 @@ generates plots and JSON summaries for reward, delay, and energy.
 """
 
 import argparse
-import json
 import os
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -79,14 +77,6 @@ PPO_FAMILY_AGENT_CLASSES = (
     SharedMAPPOAgent,
     GraphGATMAPPOAgent,
 )
-# Flat-state MAPPO agents. Graph-GAT variants are excluded because they take
-# their overrides from the dedicated --graph-gat-* flags.
-FLAT_MAPPO_AGENT_CLASSES = (
-    MAPPOAgent,
-    SharedMAPPOAgent,
-)
-
-
 FIXED_BASELINE_ALGORITHMS = frozenset(
     {
         "Local Only",
@@ -95,13 +85,6 @@ FIXED_BASELINE_ALGORITHMS = frozenset(
         "Random Offloading",
     }
 )
-
-TUNED_MODEL_FILES = {
-    "e-ATN-MADDPG": "e_atn_maddpg_best_params.json",
-    "MAPPO": "mappo_best_params.json",
-    "Graph-GAT Warmup MAPPO": "graph_gat_warmup_mappo_best_params.json",
-}
-
 
 def set_seed(seed: int = 42) -> None:
     """Set random seeds for reproducible runs.
@@ -146,12 +129,6 @@ def parse_args() -> argparse.Namespace:
         help="Override comparison_full_episodes for smoke or short runs.",
     )
     parser.add_argument(
-        "--baseline-episodes",
-        type=int,
-        default=None,
-        help="Override baseline_evaluation_episodes.",
-    )
-    parser.add_argument(
         "--note",
         default="",
         help="Short experiment note stored in outputs and appended to the output folder.",
@@ -190,81 +167,10 @@ def parse_args() -> argparse.Namespace:
         help="GATMA-Adapted device: auto, cpu, cuda, or cuda:<index>.",
     )
     parser.add_argument(
-        "--hyperparameters-dir",
-        default=None,
-        help=(
-            "Directory containing the three Optuna *_best_params.json files. "
-            "A profile.json locks environment provenance when present."
-        ),
-    )
-    parser.add_argument(
         "--experiment-seed",
         type=int,
         default=None,
         help="Override the configured experiment seed.",
-    )
-    parser.add_argument(
-        "--graph-gat-lr", type=float, default=None, help="Actor/critic learning rate."
-    )
-    parser.add_argument(
-        "--graph-gat-encoder-lr",
-        type=float,
-        default=None,
-        help="Optional encoder-specific PPO learning rate.",
-    )
-    parser.add_argument(
-        "--graph-gat-hidden-dim", type=int, default=None, help="Hidden layer width."
-    )
-    parser.add_argument(
-        "--graph-gat-embedding-dim",
-        type=int,
-        default=None,
-        help="Topology embedding width.",
-    )
-    parser.add_argument(
-        "--graph-gat-clip-param", type=float, default=None, help="PPO clip range."
-    )
-    parser.add_argument(
-        "--graph-gat-ppo-epochs",
-        type=int,
-        default=None,
-        help="PPO passes per episode rollout.",
-    )
-    parser.add_argument(
-        "--graph-gat-entropy-coef",
-        type=float,
-        default=None,
-        help="Policy entropy bonus coefficient.",
-    )
-    parser.add_argument(
-        "--graph-gat-value-loss-coef",
-        type=float,
-        default=None,
-        help="Critic loss coefficient.",
-    )
-    parser.add_argument(
-        "--graph-gat-max-grad-norm",
-        type=float,
-        default=None,
-        help="Optional PPO gradient clipping norm.",
-    )
-    parser.add_argument(
-        "--graph-gat-warmup-episodes",
-        type=int,
-        default=None,
-        help="Warmup duration for Graph-GAT Warmup variants.",
-    )
-    parser.add_argument(
-        "--graph-gat-warmup-updates-per-step",
-        type=int,
-        default=None,
-        help="Auxiliary topology updates per step during warmup.",
-    )
-    parser.add_argument(
-        "--graph-gat-warmup-lr",
-        type=float,
-        default=None,
-        help="Auxiliary topology-warmup learning rate.",
     )
     parser.add_argument(
         "--wandb-mode",
@@ -278,11 +184,6 @@ def parse_args() -> argparse.Namespace:
         help="W&B project name.",
     )
     parser.add_argument(
-        "--wandb-entity",
-        default=str(provisional["wandb_entity"]),
-        help="Optional W&B user or team entity.",
-    )
-    parser.add_argument(
         "--wandb-group",
         default="",
         help="Optional group shared by all algorithm runs in this comparison.",
@@ -294,35 +195,6 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Optional exact algorithm names to run, for example "
             "--algorithms \"Graph-GAT MAPPO\". Default: run all configured algorithms."
-        ),
-    )
-    parser.add_argument(
-        "--maddpg-epsilon-schedule",
-        choices=("linear_progress", "paper_decay"),
-        default="linear_progress",
-        help=(
-            "e-ATN-MADDPG exploration schedule. 'paper_decay' follows the "
-            "published rule epsilon = max(epsilon * decay, epsilon_min) and "
-            "ignores the tuned exploration_fraction/epsilon_final values."
-        ),
-    )
-    parser.add_argument(
-        "--mappo-entropy-coef",
-        type=float,
-        default=None,
-        help=(
-            "Entropy coefficient for every flat MAPPO agent (MAPPO, Mask "
-            "MAPPO, Shared MAPPO, Shared Mask MAPPO). Use it to match the "
-            "regularization given to Graph-GAT by --graph-gat-entropy-coef."
-        ),
-    )
-    parser.add_argument(
-        "--mappo-max-grad-norm",
-        type=float,
-        default=None,
-        help=(
-            "Gradient-norm clip for every flat MAPPO agent, matching "
-            "--graph-gat-max-grad-norm."
         ),
     )
     parser.add_argument(
@@ -450,141 +322,25 @@ def summarize_physical_compute(
     }
 
 
-def load_tuned_hyperparameters(
-    input_dir: str,
-) -> Tuple[Dict[str, Dict[str, object]], Dict[str, object]]:
-    """Load a locked Optuna profile and validate its environment settings.
-
-    Args:
-        input_dir: Directory containing best-params JSON and an optional
-            ``profile.json`` provenance lock.
-
-    Returns:
-        Tuple of model parameter mappings and profile metadata.
-
-    Raises:
-        ValueError: If the profile does not match the current environment.
-    """
-    profile_dir = Path(input_dir)
-    provisional = PAPER_PARAMS["provisional_table2_needed"]
-    profile_path = profile_dir / "profile.json"
-    if profile_path.exists():
-        profile = json.loads(profile_path.read_text(encoding="utf-8"))
-    else:
-        profile = {
-            "name": profile_dir.name,
-            "use_action_mask": False,
-            "lambda5": float(provisional["lambda5"]),
-            "p_out_value": float(provisional["p_out_value"]),
-            "effective_failed_offload_penalty": (
-                float(provisional["lambda5"])
-                * float(provisional["p_out_value"])
-            ),
-            "profile_generated_at_runtime": True,
-        }
-    for setting_name in ("lambda5", "p_out_value"):
-        current_value = float(provisional[setting_name])
-        expected_value = float(profile[setting_name])
-        if not np.isclose(current_value, expected_value):
-            raise ValueError(
-                f"hyperparameter profile expects {setting_name}="
-                f"{expected_value}, but the environment uses {current_value}"
-            )
-    current_penalty = float(provisional["lambda5"]) * float(
-        provisional["p_out_value"]
-    )
-    expected_penalty = float(profile["effective_failed_offload_penalty"])
-    if not np.isclose(current_penalty, expected_penalty):
-        raise ValueError(
-            "hyperparameter profile expects failed-offload penalty "
-            f"{expected_penalty}, but the environment uses {current_penalty}"
-        )
-    if bool(profile.get("use_action_mask", False)):
-        raise ValueError("comparison currently requires an unmasked profile")
-
-    model_params = {}
-    selected_trials = profile.get("selected_trials", {})
-    for model_name, filename in TUNED_MODEL_FILES.items():
-        artifact_path = profile_dir / filename
-        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-        if payload.get("model") != model_name:
-            raise ValueError(
-                f"expected {model_name} in {artifact_path}, "
-                f"found {payload.get('model')!r}"
-            )
-        expected_trial = selected_trials.get(model_name)
-        if expected_trial is not None and payload.get("trial") != expected_trial:
-            raise ValueError(
-                f"expected trial {expected_trial} for {model_name}, "
-                f"found {payload.get('trial')!r}"
-            )
-        params = payload.get("params")
-        if not isinstance(params, dict):
-            raise ValueError(f"missing params object in {artifact_path}")
-        model_params[model_name] = params
-
-    metadata = dict(profile)
-    metadata["path"] = str(profile_path if profile_path.exists() else profile_dir)
-    return model_params, metadata
-
-
 def build_algorithm_configs(
     graph_gat_device: Optional[str] = None,
     *,
     gatma_device: str = "auto",
-    tuned_hyperparameters: Optional[Dict[str, Dict[str, object]]] = None,
-    graph_gat_lr: Optional[float] = None,
-    graph_gat_encoder_lr: Optional[float] = None,
-    graph_gat_hidden_dim: Optional[int] = None,
-    graph_gat_embedding_dim: Optional[int] = None,
-    graph_gat_clip_param: Optional[float] = None,
-    graph_gat_ppo_epochs: Optional[int] = None,
-    graph_gat_entropy_coef: Optional[float] = None,
-    graph_gat_value_loss_coef: Optional[float] = None,
-    graph_gat_max_grad_norm: Optional[float] = None,
-    graph_gat_warmup_episodes: Optional[int] = None,
-    graph_gat_warmup_updates_per_step: Optional[int] = None,
-    graph_gat_warmup_lr: Optional[float] = None,
-    mappo_entropy_coef: Optional[float] = None,
-    mappo_max_grad_norm: Optional[float] = None,
     use_gae: bool = False,
     num_minibatches: int = 1,
-    maddpg_epsilon_schedule: str = "linear_progress",
     maddpg_actor_replay_actions: bool = False,
 ) -> Dict[str, Dict[str, object]]:
-    """Build algorithm configurations for DRL and simple baselines.
+    """Build agent configurations from model defaults and run switches.
 
     Args:
-        graph_gat_device: Optional device override applied only to Graph-GAT
-            MAPPO variants.
-        gatma_device: Device for GATMA-Adapted online and target networks.
-        mappo_entropy_coef: Optional entropy coefficient applied to every flat
-            MAPPO agent, so baselines can match the Graph-GAT setting.
-        mappo_max_grad_norm: Optional gradient-norm clip applied to every flat
-            MAPPO agent.
-        use_gae: Enable GAE(lambda) advantages for every MAPPO-family agent.
-        num_minibatches: PPO minibatches per epoch for every MAPPO-family
-            agent.
-        maddpg_epsilon_schedule: e-ATN-MADDPG exploration schedule.
-        maddpg_actor_replay_actions: Use replayed actions for the other agents
-            in the e-ATN-MADDPG policy gradient.
-        tuned_hyperparameters: Optional Optuna parameter mappings keyed by
-            tuned model name.
-        graph_gat_lr: Optional actor/critic learning-rate override.
-        graph_gat_encoder_lr: Optional encoder learning-rate override.
-        graph_gat_hidden_dim: Optional hidden-width override.
-        graph_gat_embedding_dim: Optional topology-embedding-width override.
-        graph_gat_clip_param: Optional PPO clip-range override.
-        graph_gat_ppo_epochs: Optional PPO update-epoch override.
-        graph_gat_entropy_coef: Optional entropy-coefficient override.
-        graph_gat_value_loss_coef: Optional critic-loss-coefficient override.
-        graph_gat_max_grad_norm: Optional PPO gradient-norm override.
-        graph_gat_warmup_episodes: Optional warmup-duration override.
-        graph_gat_warmup_updates_per_step: Optional warmup update-rate override.
-        graph_gat_warmup_lr: Optional warmup learning-rate override.
+        graph_gat_device: Device for Graph-GAT MAPPO variants.
+        gatma_device: Device for GATMA-Adapted agents.
+        use_gae: Enable GAE for every MAPPO-family agent.
+        num_minibatches: PPO minibatches per epoch for MAPPO-family agents.
+        maddpg_actor_replay_actions: Use replayed peer actions in MADDPG.
 
     Returns:
-        Mapping from display name to agent class and constructor kwargs.
+        Algorithm names mapped to agent classes and constructor settings.
     """
     confirmed = PAPER_PARAMS["confirmed"]
     provisional = PAPER_PARAMS["provisional_table2_needed"]
@@ -662,21 +418,23 @@ def build_algorithm_configs(
         },
         "GATMA-Adapted": {
             "class": GATMAAgent,
-            "batch_size": 128,
-            "replay_buffer_capacity": 100000,
-            "replay_updates_per_episode": 16,
+            "batch_size": int(provisional["gatma_batch_size"]),
+            "replay_buffer_capacity": int(provisional["gatma_replay_buffer_capacity"]),
+            "replay_updates_per_episode": int(
+                provisional["gatma_replay_updates_per_episode"]
+            ),
             "kwargs": {
-                "actor_lr": 1e-4,
-                "critic_lr": 1e-5,
+                "actor_lr": provisional["gatma_actor_lr"],
+                "critic_lr": provisional["gatma_critic_lr"],
                 "device": gatma_device,
-                "gamma": 0.95,
-                "tau": 0.01,
-                "hidden_dim": 64,
-                "embedding_dim": 64,
-                "num_heads": 4,
-                "epsilon_init": 0.99,
-                "epsilon_min": 0.01,
-                "exploration_fraction": 1.0,
+                "gamma": provisional["gatma_gamma"],
+                "tau": provisional["gatma_tau"],
+                "hidden_dim": int(provisional["gatma_hidden_dim"]),
+                "embedding_dim": int(provisional["gatma_embedding_dim"]),
+                "num_heads": int(provisional["gatma_num_heads"]),
+                "epsilon_init": provisional["gatma_epsilon_init"],
+                "epsilon_min": provisional["gatma_epsilon_min"],
+                "exploration_fraction": provisional["gatma_exploration_fraction"],
             },
         },
         "MAPPO": {
@@ -785,171 +543,13 @@ def build_algorithm_configs(
                     },
         },
     }
-    if tuned_hyperparameters is not None:
-        maddpg_params = tuned_hyperparameters["e-ATN-MADDPG"]
-        epsilon_final = float(maddpg_params["epsilon_final"])
-        configs["e-ATN-MADDPG"] = {
-            "class": EpsilonATNMADDPGAgent,
-            "batch_size": int(maddpg_params["batch_size"]),
-            "kwargs": {
-                "use_attention": True,
-                "use_epsilon_greedy": True,
-                "actor_lr": float(maddpg_params["actor_lr"]),
-                "critic_lr": float(maddpg_params["critic_lr"]),
-                "gamma": float(maddpg_params["gamma"]),
-                "tau": float(maddpg_params["tau"]),
-                "hidden_dim": int(maddpg_params["hidden_dim"]),
-                "epsilon_init": 1.0,
-                "epsilon_min": epsilon_final,
-                "epsilon_final": epsilon_final,
-                "exploration_fraction": float(
-                    maddpg_params["exploration_fraction"]
-                ),
-            },
-        }
-
-        mappo_params = tuned_hyperparameters["MAPPO"]
-        configs["MAPPO"]["kwargs"].update(
-            {
-                "actor_lr": float(mappo_params["actor_lr"]),
-                "critic_lr": float(mappo_params["critic_lr"]),
-                "gamma": float(mappo_params["gamma"]),
-                "clip_param": float(mappo_params["clip_param"]),
-                "ppo_epochs": int(mappo_params["ppo_epochs"]),
-                "entropy_coef": float(mappo_params["entropy_coef"]),
-                "value_loss_coef": float(mappo_params["value_loss_coef"]),
-                "max_grad_norm": mappo_params["max_grad_norm"],
-                "hidden_dim": int(mappo_params["hidden_dim"]),
-            }
-        )
-        configs["Mask MAPPO"]["kwargs"].update(
-                    {
-                        "actor_lr": float(mappo_params["actor_lr"]),
-                        "critic_lr": float(mappo_params["critic_lr"]),
-                        "gamma": float(mappo_params["gamma"]),
-                        "clip_param": float(mappo_params["clip_param"]),
-                        "ppo_epochs": int(mappo_params["ppo_epochs"]),
-                        "entropy_coef": float(mappo_params["entropy_coef"]),
-                        "value_loss_coef": float(mappo_params["value_loss_coef"]),
-                        "max_grad_norm": mappo_params["max_grad_norm"],
-                        "hidden_dim": int(mappo_params["hidden_dim"]),
-                        "use_action_mask": True,
-                    }
-                )
-
-        graph_params = tuned_hyperparameters["Graph-GAT Warmup MAPPO"]
-        shared_lr = graph_params.get("lr")
-        actor_lr = graph_params.get("actor_lr", shared_lr)
-        critic_lr = graph_params.get("critic_lr", shared_lr)
-        if actor_lr is None or critic_lr is None:
-            raise ValueError(
-                "Graph-GAT params require lr or both actor_lr and critic_lr"
-            )
-        graph_kwargs = {
-            "lr": float(actor_lr),
-            "actor_lr": float(actor_lr),
-            "critic_lr": float(critic_lr),
-            "encoder_lr": float(graph_params["encoder_lr"]),
-            "gamma": float(graph_params.get("gamma", provisional["gamma"])),
-            "hidden_dim": int(
-                graph_params.get("hidden_dim", provisional["graph_gat_hidden_dim"])
-            ),
-            "embedding_dim": int(provisional["graph_gat_embedding_dim"]),
-            "clip_param": float(graph_params["clip_param"]),
-            "ppo_epochs": int(graph_params["ppo_epochs"]),
-            "entropy_coef": float(graph_params["entropy_coef"]),
-            "value_loss_coef": float(graph_params["value_loss_coef"]),
-            "max_grad_norm": graph_params["max_grad_norm"],
-            "use_action_mask": False,
-            "topology_warmup_lr": float(graph_params["warmup_lr"]),
-            "device": selected_graph_gat_device,
-        }
-        configs["Graph-GAT MAPPO"]["kwargs"] = {
-            **graph_kwargs,
-            "topology_warmup_episodes": 0,
-            "topology_warmup_updates_per_step": 0,
-        }
-        # configs["Graph-GAT Mask MAPPO"]["kwargs"] = {
-        #             **graph_kwargs,
-        #             "use_action_mask": True,
-        #             "topology_warmup_episodes": 0,
-        #             "topology_warmup_updates_per_step": 0,
-        # }
-        configs["Graph-GAT Warmup MAPPO"]["kwargs"] = {
-            **graph_kwargs,
-            "topology_warmup_episodes": int(graph_params["warmup_episodes"]),
-            "topology_warmup_updates_per_step": int(
-                graph_params["warmup_updates_per_step"]
-            ),
-        }
-        # configs["Graph-GAT Warmup Mask MAPPO"]["kwargs"] = {
-        #             **graph_kwargs,
-        #             "use_action_mask": True,
-        #             "topology_warmup_episodes": int(graph_params["warmup_episodes"]),
-        #             "topology_warmup_updates_per_step": int(
-        #                 graph_params["warmup_updates_per_step"]
-        #             ),
-        # }
-        # configs["Lightweight Graph-GAT Warmup MAPPO"]["kwargs"] = {
-        #     **graph_kwargs,
-        #     "topology_warmup_episodes": int(graph_params["warmup_episodes"]),
-        #     "topology_warmup_updates_per_step": int(
-        #         graph_params["warmup_updates_per_step"]
-        #     ),
-        #     "lightweight_topology": True,
-        # }
-    graph_overrides = {
-        "lr": graph_gat_lr,
-        "actor_lr": graph_gat_lr,
-        "critic_lr": graph_gat_lr,
-        "encoder_lr": graph_gat_encoder_lr,
-        "hidden_dim": graph_gat_hidden_dim,
-        "embedding_dim": graph_gat_embedding_dim,
-        "clip_param": graph_gat_clip_param,
-        "ppo_epochs": graph_gat_ppo_epochs,
-        "entropy_coef": graph_gat_entropy_coef,
-        "value_loss_coef": graph_gat_value_loss_coef,
-        "max_grad_norm": graph_gat_max_grad_norm,
-    }
-    selected_graph_overrides = {
-        key: value for key, value in graph_overrides.items() if value is not None
-    }
-    warmup_overrides = {
-        "topology_warmup_episodes": graph_gat_warmup_episodes,
-        "topology_warmup_updates_per_step": graph_gat_warmup_updates_per_step,
-        "topology_warmup_lr": graph_gat_warmup_lr,
-    }
-    selected_warmup_overrides = {
-        key: value for key, value in warmup_overrides.items() if value is not None
-    }
-    for algorithm_name, config in configs.items():
-        if config["class"] is not GraphGATMAPPOAgent:
-            continue
-        config["kwargs"].update(selected_graph_overrides)
-        if "Warmup" in algorithm_name:
-            config["kwargs"].update(selected_warmup_overrides)
-
-    flat_mappo_overrides = {
-        "entropy_coef": mappo_entropy_coef,
-        "max_grad_norm": mappo_max_grad_norm,
-    }
-    selected_flat_mappo_overrides = {
-        key: value
-        for key, value in flat_mappo_overrides.items()
-        if value is not None
-    }
-    if selected_flat_mappo_overrides:
-        for config in configs.values():
-            if config["class"] in FLAT_MAPPO_AGENT_CLASSES:
-                config["kwargs"].update(selected_flat_mappo_overrides)
-
     ppo_estimator_kwargs = {
         "use_gae": bool(use_gae),
         "gae_lambda": float(provisional["ppo_gae_lambda"]),
         "num_minibatches": int(num_minibatches),
     }
     maddpg_fidelity_kwargs = {
-        "epsilon_schedule": str(maddpg_epsilon_schedule),
+        "epsilon_schedule": str(provisional["maddpg_epsilon_schedule"]),
         "actor_uses_replay_actions": bool(maddpg_actor_replay_actions),
     }
     for config in configs.values():
@@ -2265,6 +1865,10 @@ def train_algorithm(
         topology_metrics=topology_metrics,
         experiment_note=experiment_note,
         experiment_seed=experiment_seed,
+        reward_weights={
+            key: float(provisional[key])
+            for key in ("lambda1", "lambda2", "lambda3", "lambda4", "lambda5", "p_out_value")
+        },
     )
     if uses_gatma and checkpoint is not None:
         checkpoint["adaptation"] = {
@@ -2532,6 +2136,10 @@ if __name__ == "__main__":
     args = parse_args()
     confirmed = PAPER_PARAMS["confirmed"]
     provisional = PAPER_PARAMS["provisional_table2_needed"]
+    reward_weights = {
+        key: float(provisional[key])
+        for key in ("lambda1", "lambda2", "lambda3", "lambda4", "lambda5", "p_out_value")
+    }
     # experiment_seed = int(provisional["experiment_seed"])
     experiment_seed = (
         int(args.experiment_seed)
@@ -2642,39 +2250,12 @@ if __name__ == "__main__":
     )
 
     # 2. Define Algorithms to Compare
-    if args.hyperparameters_dir is not None:
-        tuned_hyperparameters, hyperparameter_profile = load_tuned_hyperparameters(
-            args.hyperparameters_dir
-        )
-        topology_metrics["hyperparameter_profile"] = hyperparameter_profile
-        print(
-            "Hyperparameter profile: "
-            f"{hyperparameter_profile['name']} ({hyperparameter_profile['path']})"
-        )
     algorithms = select_algorithm_configs(
         build_algorithm_configs(
             args.graph_gat_device,
             gatma_device=args.gatma_device,
-            tuned_hyperparameters=None,
-            graph_gat_lr=args.graph_gat_lr,
-            graph_gat_encoder_lr=args.graph_gat_encoder_lr,
-            graph_gat_hidden_dim=args.graph_gat_hidden_dim,
-            graph_gat_embedding_dim=args.graph_gat_embedding_dim,
-            graph_gat_clip_param=args.graph_gat_clip_param,
-            graph_gat_ppo_epochs=args.graph_gat_ppo_epochs,
-            graph_gat_entropy_coef=args.graph_gat_entropy_coef,
-            graph_gat_value_loss_coef=args.graph_gat_value_loss_coef,
-            graph_gat_max_grad_norm=args.graph_gat_max_grad_norm,
-            graph_gat_warmup_episodes=args.graph_gat_warmup_episodes,
-            graph_gat_warmup_updates_per_step=(
-                args.graph_gat_warmup_updates_per_step
-            ),
-            graph_gat_warmup_lr=args.graph_gat_warmup_lr,
-            mappo_entropy_coef=args.mappo_entropy_coef,
-            mappo_max_grad_norm=args.mappo_max_grad_norm,
             use_gae=args.use_gae,
             num_minibatches=args.num_minibatches,
-            maddpg_epsilon_schedule=args.maddpg_epsilon_schedule,
             maddpg_actor_replay_actions=args.maddpg_actor_replay_actions,
         ),
         args.algorithms,
@@ -2688,11 +2269,7 @@ if __name__ == "__main__":
         if args.episodes is not None
         else int(provisional["comparison_full_episodes"])
     )
-    BASELINE_EVALUATION_EPISODES = (
-        int(args.baseline_episodes)
-        if args.baseline_episodes is not None
-        else int(provisional["baseline_evaluation_episodes"])
-    )
+    BASELINE_EVALUATION_EPISODES = int(provisional["baseline_evaluation_episodes"])
     algorithm_episode_counts = {}
     last_training_state_rows = []
     model_checkpoints = []
@@ -2745,7 +2322,7 @@ if __name__ == "__main__":
         experiment_tracker = initialize_experiment_tracker(
             mode=args.wandb_mode,
             project=args.wandb_project,
-            entity=args.wandb_entity,
+            entity=str(provisional["wandb_entity"]),
             run_name=(
                 f"{algo_name} - {topology_scenario.name} - "
                 f"priority-{args.task_priority}"
@@ -2756,6 +2333,11 @@ if __name__ == "__main__":
                 "algorithm": algo_name,
                 "agent_class": config["class"].__name__,
                 "agent_kwargs": dict(config.get("kwargs", {})),
+                "reward_weights": reward_weights,
+                "use_gae": args.use_gae,
+                "num_minibatches": args.num_minibatches,
+                "maddpg_updates_per_episode": args.maddpg_updates_per_episode,
+                "maddpg_actor_replay_actions": args.maddpg_actor_replay_actions,
                 "topology_scenario": topology_scenario.name,
                 "topology_metrics": topology_metrics,
                 "num_devices": len(devices),
@@ -2803,9 +2385,15 @@ if __name__ == "__main__":
                 topology_metrics=topology_metrics,
                 experiment_note=experiment_note,
                 experiment_seed=experiment_seed,
+                agent_kwargs=config.get("kwargs", {}),
+                reward_weights=reward_weights,
+                maddpg_updates_per_episode=args.maddpg_updates_per_episode,
+                task_priority=args.task_priority,
             )
         )
         if checkpoint is not None:
+            checkpoint["task_priority"] = args.task_priority
+            checkpoint["maddpg_updates_per_episode"] = args.maddpg_updates_per_episode
             model_checkpoints.append(checkpoint)
 
     # 4. Plotting Results

@@ -17,7 +17,6 @@ from run_comparision import (
     _should_print_diagnostics,
     _summarize_step_metrics,
     build_algorithm_configs,
-    load_tuned_hyperparameters,
 )
 from utils.comparison_outputs import (
     _save_model_checkpoint,
@@ -161,43 +160,22 @@ def test_learning_algorithm_kwargs_use_config_values() -> None:
     assert configs["Graph-GAT MAPPO"]["kwargs"]["use_action_mask"] is False
 
 
-def test_locked_profile_transfers_best_params_to_comparison_models() -> None:
-    """The locked Optuna profile should configure all four unmasked models."""
-    profile_dir = PAPER_PARAMS["provisional_table2_needed"][
-        "comparison_hyperparameters_dir"
+def test_comparison_models_read_current_config(monkeypatch) -> None:
+    """Changing model config must change agents without a CLI tuning flag."""
+    provisional = PAPER_PARAMS["provisional_table2_needed"]
+    monkeypatch.setitem(provisional, "maddpg_epsilon_schedule", "paper_decay")
+    monkeypatch.setitem(provisional, "gatma_actor_lr", 2e-4)
+
+    configs = build_algorithm_configs()
+
+    assert configs["e-ATN-MADDPG"]["kwargs"]["epsilon_schedule"] == "paper_decay"
+    assert configs["GATMA-Adapted"]["kwargs"]["actor_lr"] == pytest.approx(2e-4)
+    assert configs["MAPPO"]["kwargs"]["entropy_coef"] == provisional[
+        "mappo_entropy_coef"
     ]
-    tuned_params, metadata = load_tuned_hyperparameters(profile_dir)
-
-    configs = build_algorithm_configs(
-        graph_gat_device="cpu",
-        tuned_hyperparameters=tuned_params,
-    )
-
-    assert metadata["effective_failed_offload_penalty"] == pytest.approx(-0.5)
-    assert configs["e-ATN-MADDPG"]["batch_size"] == 256
-    assert configs["MAPPO"]["kwargs"]["actor_lr"] == pytest.approx(
-        0.0004647005894999619
-    )
-    assert configs["Graph-GAT MAPPO"]["kwargs"][
-        "topology_warmup_episodes"
-    ] == 0
-    assert configs["Graph-GAT Warmup MAPPO"]["kwargs"][
-        "topology_warmup_episodes"
-    ] == 20
-    assert configs["Graph-GAT Warmup MAPPO"]["kwargs"][
-        "topology_warmup_updates_per_step"
-    ] == 4
-
-
-def test_optuna_output_directory_transfers_without_manual_profile() -> None:
-    """A normal Optuna output directory should be directly reusable."""
-    tuned_params, metadata = load_tuned_hyperparameters(
-        "results/optuna/unmasked_pairwise_penalty_0_25_5trial"
-    )
-
-    assert metadata["profile_generated_at_runtime"] is True
-    assert tuned_params["e-ATN-MADDPG"]["batch_size"] == 256
-    assert tuned_params["Graph-GAT Warmup MAPPO"]["warmup_episodes"] == 20
+    assert configs["Graph-GAT MAPPO"]["kwargs"]["entropy_coef"] == provisional[
+        "graph_gat_entropy_coef"
+    ]
 
 
 def test_optuna_default_trials_build_requested_unmasked_models() -> None:
@@ -324,6 +302,24 @@ def test_last_training_state_line_is_flat_for_easy_comparison() -> None:
     }
 
 
+def test_final_row_records_effective_run_settings() -> None:
+    """Local JSONL must identify the settings behind a paper result."""
+    row = build_last_training_state_line(
+        "MAPPO",
+        {"reward": [1.0]},
+        episode_count=1,
+        agent_kwargs={"use_gae": True, "num_minibatches": 4},
+        reward_weights={"lambda5": 1.0, "p_out_value": -1.0},
+        maddpg_updates_per_episode=16,
+        task_priority="on",
+    )
+
+    assert row["agent_kwargs"] == {"use_gae": True, "num_minibatches": 4}
+    assert row["reward_weights"] == {"lambda5": 1.0, "p_out_value": -1.0}
+    assert row["maddpg_updates_per_episode"] == 16
+    assert row["task_priority"] == "on"
+
+
 def test_fixed_baseline_does_not_create_model_checkpoint() -> None:
     """Rule-based baselines should not save empty model checkpoints."""
     agent = LocalOnlyAgent(state_dim=4, action_dim=3, num_agents=1)
@@ -357,6 +353,7 @@ def test_mappo_checkpoint_contains_agent_weights_and_metadata() -> None:
         action_dim=3,
         num_devices=1,
         num_servers=2,
+        reward_weights={"lambda5": 1.0, "p_out_value": -1.0},
     )
 
     assert checkpoint is not None
@@ -368,6 +365,7 @@ def test_mappo_checkpoint_contains_agent_weights_and_metadata() -> None:
     assert checkpoint["num_servers"] == 2
     assert checkpoint["agent_class"] == "MAPPOAgent"
     assert checkpoint["agent_kwargs"] == {"lr": 0.0001}
+    assert checkpoint["reward_weights"] == {"lambda5": 1.0, "p_out_value": -1.0}
     assert len(checkpoint["agents"]) == 1
     assert "actor" in checkpoint["agents"][0]
     assert "critic" in checkpoint["agents"][0]

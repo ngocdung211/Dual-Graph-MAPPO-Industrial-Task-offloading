@@ -50,7 +50,7 @@ cells. Each route carries two devices starting at opposite corners. In
 Coordinates and radii are in metres; server entries follow S1 through S9.
 
 This variant's default `heterogeneous` profile uses explicit radii
-`(15, 15, 12, 15, 15, 12, 12, 15, 15)` rather than sampling them again.
+`(12, 15, 12, 12, 15, 12, 12, 15, 12)` rather than sampling them again.
 S2, S5, and S8 therefore remain at 15 m, regardless of topology seed. Both
 `--server-profile scenario` and `--server-profile heterogeneous` preserve these
 values. Explicit `uniform` or `stress` overrides instead use the nominal 12 m
@@ -551,10 +551,13 @@ gradients are combined in the same backward pass.
    `--num-minibatches`, and both are off by default so earlier runs reproduce.
 5. **Warmup sampling:** auxiliary warmup uses all current device–server pairs;
    there is no `same_class=True` sampling step in the current implementation.
-6. **Tuned profile:** `--hyperparameters-dir` loads and validates a saved
-   profile, but the runner currently passes `tuned_hyperparameters=None` to
-   `build_algorithm_configs()`, so that CLI path does not apply the stored
-   8-epoch / 20-episode / 4-update values to the agents.
+6. **Model settings:** `utils/paper_config.py` supplies MAPPO, Graph-GAT,
+   GATMA-Adapted, and e-ATN-MADDPG hyperparameters. The comparison CLI keeps
+   run choices such as topology, seed, devices, GAE, minibatches, and replay
+   updates. The old `--hyperparameters-dir` and per-model tuning flags are no
+   longer accepted; saved `penalty_0_5` profiles remain historical artifacts.
+   W&B config and local JSONL/checkpoints record resolved agent settings and
+   the current reward weights, including failed-offload penalty `-1`.
 
 ## 8. Where each shape is defined
 

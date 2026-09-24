@@ -10,6 +10,7 @@ from torch.distributions import Categorical
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from baselines.gatma import GATMAAgent
 from baselines.graph_gat_mappo import GraphGATMAPPOAgent, GraphGATRolloutBuffer
 from run_comparision import (
     _collect_graph_gat_actions,
@@ -17,6 +18,7 @@ from run_comparision import (
     build_algorithm_configs,
     select_algorithm_configs,
 )
+from utils.paper_config import PAPER_PARAMS
 from utils.topology_graph_state import build_topology_graph_state
 
 
@@ -624,16 +626,7 @@ def test_graph_gat_mappo_is_registered_as_separate_comparison_model() -> None:
 
     assert configs["Graph-GAT MAPPO"]["class"] is GraphGATMAPPOAgent
     assert configs["Graph-GAT Warmup MAPPO"]["class"] is GraphGATMAPPOAgent
-    assert (
-        configs["Lightweight Graph-GAT Warmup MAPPO"]["class"]
-        is GraphGATMAPPOAgent
-    )
-    assert (
-        configs["Lightweight Graph-GAT Warmup MAPPO"]["kwargs"][
-            "lightweight_topology"
-        ]
-        is True
-    )
+    assert configs["Graph-GAT Warmup Mask MAPPO"]["class"] is GraphGATMAPPOAgent
     assert (
         configs["Graph-GAT Warmup MAPPO"]["kwargs"][
             "topology_warmup_episodes"
@@ -657,44 +650,29 @@ def test_graph_gat_device_override_only_applies_to_graph_agents() -> None:
         kwargs = config["kwargs"]
         if config["class"] is GraphGATMAPPOAgent:
             assert kwargs["device"] == "cpu"
+        elif config["class"] is GATMAAgent:
+            assert kwargs["device"] == "auto"
         else:
             assert "device" not in kwargs
 
 
-def test_graph_gat_hyperparameter_overrides_are_scoped_to_graph_variants() -> None:
-    """CLI tuning values should not change flat MAPPO configurations."""
-    configs = build_algorithm_configs(
-        graph_gat_lr=8e-5,
-        graph_gat_encoder_lr=3e-5,
-        graph_gat_clip_param=0.15,
-        graph_gat_entropy_coef=0.005,
-        graph_gat_value_loss_coef=0.5,
-        graph_gat_max_grad_norm=0.5,
-        graph_gat_warmup_episodes=20,
-        graph_gat_warmup_updates_per_step=2,
-        graph_gat_warmup_lr=3e-4,
-    )
+def test_graph_gat_config_is_scoped_to_graph_variants(monkeypatch) -> None:
+    """A graph setting in config must not change flat MAPPO."""
+    provisional = PAPER_PARAMS["provisional_table2_needed"]
+    monkeypatch.setitem(provisional, "graph_gat_entropy_coef", 0.005)
 
-    for algorithm_name, config in configs.items():
-        kwargs = config["kwargs"]
-        if config["class"] is not GraphGATMAPPOAgent:
-            assert "encoder_lr" not in kwargs
-            if "entropy_coef" in kwargs:
-                assert kwargs["entropy_coef"] != 0.005
-            continue
-        assert kwargs["lr"] == 8e-5
-        assert kwargs["encoder_lr"] == 3e-5
-        assert kwargs["clip_param"] == 0.15
-        assert kwargs["entropy_coef"] == 0.005
-        assert kwargs["value_loss_coef"] == 0.5
-        assert kwargs["max_grad_norm"] == 0.5
-        if "Warmup" in algorithm_name:
-            assert kwargs["topology_warmup_episodes"] == 20
-            assert kwargs["topology_warmup_updates_per_step"] == 2
-            assert kwargs["topology_warmup_lr"] == 3e-4
-        else:
-            assert kwargs["topology_warmup_episodes"] == 0
-            assert kwargs["topology_warmup_updates_per_step"] == 0
+    configs = build_algorithm_configs(graph_gat_device="cpu")
+
+    for config in configs.values():
+        if config["class"] is GraphGATMAPPOAgent:
+            assert config["kwargs"]["entropy_coef"] == 0.005
+    assert configs["Shared MAPPO"]["kwargs"]["entropy_coef"] != 0.005
+
+
+def test_comparison_builder_rejects_removed_model_override() -> None:
+    """Model hyperparameters must come from config, not builder overrides."""
+    with pytest.raises(TypeError):
+        build_algorithm_configs(graph_gat_lr=8e-5)
 
 
 def test_graph_gat_optimizer_supports_encoder_specific_learning_rate() -> None:

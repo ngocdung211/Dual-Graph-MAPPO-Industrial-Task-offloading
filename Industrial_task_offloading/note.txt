@@ -1,19 +1,42 @@
-# MacBook Air M1 (8 GB): run these commands sequentially.
+# Current Windows modular-cell command, followed by historical MacBook Air commands.
 # Activate the project environment first: conda activate task_offloading
 # One-time W&B setup:
 # python -m pip install -r requirements-wandb.txt
 # wandb login
 set -e
 
-python run_comparision.py --topology-scenario paper_10d_3s --episodes 1000 --experiment-seed 175 --graph-gat-device cpu --hyperparameters-dir configs/hyperparameters/unmasked_penalty_0_5 --note penalty_0_5_best_paper_1000ep_seed175 --wandb-mode online --wandb-group penalty_0_5_best_1000ep_seed175 --algorithms "e-ATN-MADDPG" "MAPPO" "Graph-GAT MAPPO" "Graph-GAT Warmup MAPPO"
+# Current modular-cell paper comparison (Windows path; run from the project directory).
+python run_comparision.py \
+  --algorithms "Shared MAPPO" "GATMA-Adapted" "Graph-GAT MAPPO" \
+    "Graph-GAT Warmup MAPPO" "Graph-GAT Warmup Mask MAPPO" "e-ATN-MADDPG" \
+  --topology-scenario modular_cells_30d_9s \
+  --server-profile scenario \
+  --episodes 1000 \
+  --experiment-seed 75 \
+  --task-priority on \
+  --use-gae \
+  --num-minibatches 4 \
+  --maddpg-updates-per-episode 16 \
+  --maddpg-actor-replay-actions \
+  --gatma-device cpu \
+  --graph-gat-device cuda \
+  --dataset-path dataset/KolektorSDD \
+  --local-output-root plots \
+  --drive-artifact-root 'G:\My Drive\Dual-Graph-MAPPO-Artifacts' \
+  --wandb-mode online \
+  --wandb-project industrial-task-offloading \
+  --wandb-group modular_cells_30d_9s-seed75 \
+  --note modular_cells_30d_9s-seed75
 
-python run_comparision.py --topology-scenario medium_20d_6s --episodes 1000 --experiment-seed 190 --graph-gat-device cpu --hyperparameters-dir configs/hyperparameters/unmasked_penalty_0_5 --note penalty_0_5_best_medium_1000ep_seed190 --wandb-mode online --wandb-group penalty_0_5_best_1000ep_seed175 --algorithms "e-ATN-MADDPG" "MAPPO" "Graph-GAT MAPPO" "Graph-GAT Warmup MAPPO"
+# Historical command (removed CLI flags): python run_comparision.py --topology-scenario paper_10d_3s --episodes 1000 --experiment-seed 175 --graph-gat-device cpu --hyperparameters-dir configs/hyperparameters/unmasked_penalty_0_5 --note penalty_0_5_best_paper_1000ep_seed175 --wandb-mode online --wandb-group penalty_0_5_best_1000ep_seed175 --algorithms "e-ATN-MADDPG" "MAPPO" "Graph-GAT MAPPO" "Graph-GAT Warmup MAPPO"
 
-python run_comparision.py --topology-scenario large_30d_9s --episodes 1000 --experiment-seed 190 --graph-gat-device cpu --hyperparameters-dir configs/hyperparameters/unmasked_penalty_0_5 --note penalty_0_5_best_large_1000ep_seed190 --wandb-mode online --wandb-group penalty_0_5_best_1000ep_seed190 --algorithms "e-ATN-MADDPG" "MAPPO" "Graph-GAT MAPPO" "Graph-GAT Warmup MAPPO" "Mask MAPPO" "Graph-GAT Mask MAPPO" "Graph-GAT Warmup Mask MAPPO"
+# Historical command (removed CLI flags): python run_comparision.py --topology-scenario medium_20d_6s --episodes 1000 --experiment-seed 190 --graph-gat-device cpu --hyperparameters-dir configs/hyperparameters/unmasked_penalty_0_5 --note penalty_0_5_best_medium_1000ep_seed190 --wandb-mode online --wandb-group penalty_0_5_best_1000ep_seed175 --algorithms "e-ATN-MADDPG" "MAPPO" "Graph-GAT MAPPO" "Graph-GAT Warmup MAPPO"
+
+# Historical command (removed CLI flags): python run_comparision.py --topology-scenario large_30d_9s --episodes 1000 --experiment-seed 190 --graph-gat-device cpu --hyperparameters-dir configs/hyperparameters/unmasked_penalty_0_5 --note penalty_0_5_best_large_1000ep_seed190 --wandb-mode online --wandb-group penalty_0_5_best_1000ep_seed190 --algorithms "e-ATN-MADDPG" "MAPPO" "Graph-GAT MAPPO" "Graph-GAT Warmup MAPPO" "Mask MAPPO" "Graph-GAT Mask MAPPO" "Graph-GAT Warmup Mask MAPPO"
 
 
  OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 
-python run_comparision.py --topology-scenario large_30d_9s --episodes 1000 --experiment-seed 105 --graph-gat-device cpu --use-gae --num-minibatches 4 --algorithms "Shared MAPPO" "Shared Mask MAPPO" "Graph-GAT MAPPO" "Graph-GAT Mask MAPPO" "e-ATN-MADDPG" --graph-gat-lr 1e-4 --graph-gat-ppo-epochs 4 --graph-gat-clip-param 0.2 --graph-gat-value-loss-coef 1.0 --graph-gat-encoder-lr 1.4e-5 --graph-gat-entropy-coef 1e-3 --graph-gat-max-grad-norm 0.3 --mappo-entropy-coef 1e-3 --mappo-max-grad-norm 0.3 --maddpg-updates-per-episode 16 --wandb-mode online --wandb-group final_ladder_s105 --note final_ladder --task-priority off
+# Historical command (removed CLI flags): python run_comparision.py --topology-scenario large_30d_9s --episodes 1000 --experiment-seed 105 --graph-gat-device cpu --use-gae --num-minibatches 4 --algorithms "Shared MAPPO" "Shared Mask MAPPO" "Graph-GAT MAPPO" "Graph-GAT Mask MAPPO" "e-ATN-MADDPG" --graph-gat-lr 1e-4 --graph-gat-ppo-epochs 4 --graph-gat-clip-param 0.2 --graph-gat-value-loss-coef 1.0 --graph-gat-encoder-lr 1.4e-5 --graph-gat-entropy-coef 1e-3 --graph-gat-max-grad-norm 0.3 --mappo-entropy-coef 1e-3 --mappo-max-grad-norm 0.3 --maddpg-updates-per-episode 16 --wandb-mode online --wandb-group final_ladder_s105 --note final_ladder --task-priority off
 
 
 giờ mình sẽ chạy với cả lamda = 5 và penalty 1 trước nhé. Sau đó mình sẽ thử với các thứ khác

@@ -4,6 +4,7 @@ import pathlib
 import sys
 
 import numpy as np
+import pytest
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -176,6 +177,76 @@ def test_comparison_cli_accepts_topology_seed_and_server_profile(monkeypatch) ->
     assert args.server_profile == "stress"
 
 
+def test_comparison_cli_accepts_modular_paper_run(monkeypatch) -> None:
+    """The planned six-model comparison command must remain runnable."""
+    algorithms = [
+        "Shared MAPPO",
+        "GATMA-Adapted",
+        "Graph-GAT MAPPO",
+        "Graph-GAT Warmup MAPPO",
+        "Graph-GAT Warmup Mask MAPPO",
+        "e-ATN-MADDPG",
+    ]
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_comparision.py",
+            "--algorithms", *algorithms,
+            "--topology-scenario", "modular_cells_30d_9s",
+            "--server-profile", "scenario",
+            "--episodes", "1",
+            "--experiment-seed", "75",
+            "--task-priority", "on",
+            "--use-gae",
+            "--num-minibatches", "4",
+            "--maddpg-updates-per-episode", "16",
+            "--maddpg-actor-replay-actions",
+            "--gatma-device", "cpu",
+            "--graph-gat-device", "cuda",
+            "--dataset-path", "dataset/KolektorSDD",
+            "--local-output-root", "plots",
+            "--drive-artifact-root", r"G:\My Drive\Dual-Graph-MAPPO-Artifacts",
+            "--wandb-mode", "online",
+            "--wandb-project", "industrial-task-offloading",
+            "--wandb-group", "modular_cells_30d_9s-seed75",
+            "--note", "modular_cells_30d_9s-seed75",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.algorithms == algorithms
+    assert args.server_profile == "scenario"
+    assert args.use_gae is True
+    assert args.num_minibatches == 4
+    assert args.maddpg_updates_per_episode == 16
+    assert args.maddpg_actor_replay_actions is True
+    assert args.graph_gat_device == "cuda"
+    assert args.gatma_device == "cpu"
+
+
+@pytest.mark.parametrize(
+    "removed_flag, value",
+    [
+        ("--hyperparameters-dir", "old-profile"),
+        ("--graph-gat-lr", "0.001"),
+        ("--mappo-entropy-coef", "0.01"),
+        ("--maddpg-epsilon-schedule", "paper_decay"),
+    ],
+)
+def test_comparison_cli_rejects_removed_model_flags(
+    monkeypatch, removed_flag: str, value: str
+) -> None:
+    """Model tuning moves to config, so old CLI overrides must fail clearly."""
+    monkeypatch.setattr(sys, "argv", ["run_comparision.py", removed_flag, value])
+
+    with pytest.raises(SystemExit) as error:
+        parse_args()
+
+    assert error.value.code == 2
+
+
 def test_preview_writes_selected_seeded_industrial_scenario(tmp_path) -> None:
     """Preview output must use the same scenario controls as training."""
     result = write_previews(
@@ -216,7 +287,7 @@ def test_checkpoint_reconstructs_exact_seeded_server_coverage() -> None:
 
 def test_modular_preview_and_servers_preserve_explicit_coverage(tmp_path) -> None:
     """Scenario resolution must not resample the approved per-server radii."""
-    expected_radii = (15.0, 15.0, 12.0, 15.0, 15.0, 12.0, 12.0, 15.0, 15.0)
+    expected_radii = (12.0, 15.0, 12.0, 12.0, 15.0, 12.0, 12.0, 15.0, 12.0)
     scenario = get_topology_scenario("modular_cells_30d_9s", topology_seed=73)
     servers = build_servers_for_scenario(
         scenario,
