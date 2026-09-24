@@ -1004,7 +1004,7 @@ Historical note: this queue is preserved for traceability. Use the 2026-07-08 ac
   - `_calculate_reward` already follows Eq. 24 form.
   - `_update_connection_windows` uses subslots to estimate `l_start` and `l_end`.
   - `_schedule_edge_items` currently falls back to local execution when an offload violates the connection window. This may conflict with paper constraints C1/C2, which define feasibility of offloaded execution.
-  - `_calculate_result_transfer` handles local-to-edge and edge-to-local transfer, but not edge-to-different-edge transfer.
+  - Decision: different edge servers are assumed to have a direct inter-server link with negligible transfer delay and energy. `_calculate_result_transfer` intentionally returns zero for edge-to-different-edge transfer. Keep this out of the current P0 work; revisit only if modeling backhaul cost or validating this assumption with system measurements.
 
 ### MADDPG Path
 

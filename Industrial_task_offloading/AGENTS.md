@@ -9,3 +9,4 @@
 7. **Structure before implementation.** Plan the project structure and explicitly identify the number and responsibilities of application layers and AI model roles before implementation. Clarify what “model layers” means if ambiguous; do not confuse application layers, agent roles, and neural-network layers.
 8. **Minimum code.** Prefer the smallest maintainable implementation meeting the agreed requirements. Reuse only what is needed; do not copy the whole reference project by default.
 9. **Useful inline comments.** Add inline comments at important function steps where they explain intent, constraints, or non-obvious behavior. Avoid comments that merely repeat the code.
+**Disscuss before code** Always disscuss with user to ask about the expectation and requirements. Then explain for user the impact of the code will update. So that user can know and understand before change any code. Then after the plan is approved you can change the code follow the plan.

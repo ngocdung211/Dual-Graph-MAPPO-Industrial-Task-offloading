@@ -161,6 +161,33 @@ def test_joint_state_matches_declared_dimension() -> None:
     assert joint_state.shape == (1, env.get_state_dim())
 
 
+def test_episode_reset_replays_route_from_initial_corner() -> None:
+    """Every device must replay the same route after an episode reset."""
+    env = _build_scenario_env("paper_10d_3s", subslot_count=10)
+
+    env.reset_episode()
+    initial_locations = [device.location.copy() for device in env.devices]
+    initial_directions = [device.direction.copy() for device in env.devices]
+    for device in env.devices:
+        env._move_device_on_path(device, elapsed=25.0)
+    first_positions_after_movement = [device.location.copy() for device in env.devices]
+    assert any(
+        not np.array_equal(start, moved)
+        for start, moved in zip(initial_locations, first_positions_after_movement)
+    )
+
+    env.reset_episode()
+
+    for device, location, direction in zip(
+        env.devices, initial_locations, initial_directions
+    ):
+        np.testing.assert_array_equal(device.location, location)
+        np.testing.assert_array_equal(device.direction, direction)
+        env._move_device_on_path(device, elapsed=25.0)
+    for device, position in zip(env.devices, first_positions_after_movement):
+        np.testing.assert_array_equal(device.location, position)
+
+
 def test_reward_matches_equation_24_terms() -> None:
     """Reward should follow Eq. 24 arithmetic exactly."""
     env = _build_env(server_location=np.array([0.0, 1.0]))

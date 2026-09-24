@@ -1,6 +1,19 @@
 # Experiment Plan
 
-## Locked configuration
+## Current paper setting (2026-09-24)
+
+- Keep the current effective failed-offload penalty at `-1`
+  (`lambda5=1.0`, `p_out_value=-1.0`).
+- Do not use `--hyperparameters-dir` or the old `unmasked_penalty_0_5`
+  profile as a requirement for new paper experiments.
+- Keep older `penalty_0_5` results and command records labeled with their
+  original settings; they are historical evidence, not `-1` results.
+- Before ablations, record the actual reward weights, seed, topology, model
+  settings, and code revision for each new run.
+
+## Historical `-0.5` plan (not the current paper setting)
+
+### Locked configuration
 
 - Environment: effective failed-offload penalty `-0.5`
   (`lambda5=0.5`, `p_out_value=-1.0`).
@@ -13,7 +26,7 @@
 - Selected Optuna trials: e-ATN-MADDPG trial 11, MAPPO trial 23,
   Graph-GAT Warmup MAPPO trial 20.
 
-## Completed topology comparison
+### Completed topology comparison
 
 1. [x] Train e-ATN-MADDPG, MAPPO, Graph-GAT MAPPO, and Graph-GAT Warmup
    MAPPO on `paper_10d_3s` for 1000 episodes.
@@ -22,7 +35,7 @@
 4. [x] Preserve final JSONL, plots, checkpoints, profile name, topology
    metrics, and actual CPU statistics for every run.
 
-## Immediate next work
+### Immediate next work
 
 1. [x] Preserve complete per-episode histories locally, not only plots and the
    final episode, so paper-style averages and final-window statistics can be
@@ -35,7 +48,7 @@
    - transfer the locked unmasked hyperparameters to masked variants; or
    - confirm only MAPPO and Graph-GAT Warmup MAPPO across additional seeds.
 
-## Seed provenance note
+### Seed provenance note
 
 - The comparison group named `penalty_0_5_best_1000ep_seed175` created on
   2026-08-08 actually used seed 75 because the runner previously had no seed
@@ -45,7 +58,7 @@
 - `run_comparision.py` now accepts `--experiment-seed`; the corrected commands
   in `note.txt` explicitly pass `--experiment-seed 175`.
 
-## Deferred work
+### Deferred work
 
 1. Confirm the selected configuration with independent training seeds;
    rerank only if performance is unstable.
@@ -60,7 +73,7 @@
    transfer time, local queue time, and server queue time; the current
    `queue_or_wait_time` diagnostic combines more than pure server queuing.
 
-## Optional validation
+### Optional validation
 
 1. Evaluate saved checkpoints with deterministic greedy actions on independent
    validation seeds and report mean plus standard deviation separately from

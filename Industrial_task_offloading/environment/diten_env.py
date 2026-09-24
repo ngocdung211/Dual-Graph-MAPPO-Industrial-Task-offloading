@@ -135,8 +135,10 @@ class DITENEnv:
         self.digital_twin.reset()
         self.digital_twin_snapshot = None
 
-        for device in self.devices:
-            waypoint_index = self.device_waypoint_idx[device.id]
+        for device_index, device in enumerate(self.devices):
+            # Restore the route phase used when paths were first built.
+            waypoint_index = 0 if device_index % 2 == 0 else 2
+            self.device_waypoint_idx[device.id] = waypoint_index
             waypoints = self.device_waypoints[device.id]
             device.update_location(waypoints[waypoint_index].copy())
             next_waypoint = waypoints[(waypoint_index + 1) % (len(waypoints) - 1)]

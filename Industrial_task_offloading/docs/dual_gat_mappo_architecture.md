@@ -43,8 +43,10 @@ python run_comparision.py \
 The approved `modular_cells_30d_9s` variant uses the same 180 m × 120 m floor,
 with three distinct modules, 15 routes, 30 devices, and nine servers. Module A
 has grouped cells, B has staggered horizontal cells, and C has mixed vertical
-cells. Each route carries two devices starting at opposite corners. In
-`utils/topology_scenarios_config.py`, edit `modular_cell_routes()` to change
+cells. Each route carries two devices starting at opposite corners. Every
+training episode resets both devices to those same corners and replays the
+route from its beginning. In `utils/topology_scenarios_config.py`, edit
+`modular_cell_routes()` to change
 `rectangle(left, bottom, right, top)` bounds, and edit the named scenario's
 `server_locations` and `coverage_radii` to change server positions and radii.
 Coordinates and radii are in metres; server entries follow S1 through S9.
@@ -208,8 +210,11 @@ The state exposes DT estimates `f_hat`. Physical execution reconstructs
 `delta_f = f_hat - f` and `f = f_hat - delta_f`; estimated delay plus its
 deviation therefore equals `CPU/f`. Local computation energy uses
 `tau × CPU × f²`; edge-server computation energy is temporarily excluded, so
-offloaded execution contributes transmission energy only. Current compute
-ranges are 0.8–1.2 GHz for devices and
+offloaded execution contributes transmission energy only. Consecutive
+subtasks placed on different edge servers are assumed to use a direct
+inter-server link with negligible transfer delay and energy; the simulator
+currently records both as zero. This is a modeling assumption, not a measured
+backhaul property. Current compute ranges are 0.8–1.2 GHz for devices and
 2.3–2.5 GHz for servers. Both device and server DT estimates use independent
 uniform relative errors in `[-5%, 5%]` at each time slot. Reward weights are
 `(lambda1,...,lambda5)=(5,5,5,5,1)`, the failed-offload penalty is `-1`,
