@@ -77,7 +77,14 @@ selection, strict local dataset loading, local run publication, and post-run
 Drive synchronization. The learned model roles are unchanged: the frozen
 Task-GAT produces task priority and the trainable topology policy/critic
 consumes connectivity. Storage and topology changes do not add a neural-network
-role.
+role. `run_comparision.py` keeps the CLI, action collection, agent updates,
+training loop, and run orchestration. `utils/comparison_setup.py` owns
+seeding and scenario construction; `utils/comparison_algorithm_config.py`
+builds agent settings; `utils/comparison_diagnostics.py` and
+`utils/experiment_tracking.py` format diagnostics and episode records; and
+`utils/comparison_evaluation.py` evaluates saved checkpoints. The runner
+imports these helpers, so this module split does not change model roles,
+training order, or configured hyperparameters.
 
 ### Local-first dataset and artifact flow
 

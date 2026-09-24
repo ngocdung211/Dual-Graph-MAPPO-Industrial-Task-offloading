@@ -1,5 +1,6 @@
 """Tests for comparison metric diagnostics."""
 
+import importlib
 import pathlib
 import sys
 
@@ -8,6 +9,8 @@ import torch
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+
+import run_comparision as runner
 
 from baselines.mappo import MAPPOAgent
 from baselines.offloading_baselines import LocalOnlyAgent
@@ -381,3 +384,32 @@ def test_save_model_checkpoint_writes_safe_filename(tmp_path) -> None:
     assert checkpoint_path.endswith("Graph-GAT_MAPPO_checkpoint.pt")
     loaded = torch.load(checkpoint_path, map_location="cpu")
     assert loaded["model"] == "Graph-GAT MAPPO"
+
+@pytest.mark.parametrize(
+    ("module_name", "function_names"),
+    [
+        (
+            "utils.comparison_algorithm_config",
+            ("build_algorithm_configs", "select_algorithm_configs", "_episodes_for_algorithm"),
+        ),
+        (
+            "utils.comparison_diagnostics",
+            (
+                "summarize_physical_compute",
+                "_summarize_step_metrics",
+                "_format_diagnostic_summary",
+            ),
+        ),
+        ("utils.experiment_tracking", ("_build_episode_tracking_metrics",)),
+        ("utils.comparison_evaluation", ("evaluate_algorithm_checkpoint",)),
+        (
+            "utils.comparison_setup",
+            ("set_seed", "build_servers_for_scenario", "build_devices_for_scenario"),
+        ),
+    ],
+)
+def test_runner_reexports_utility_functions(module_name, function_names):
+    """Existing runner imports use the utility implementation directly."""
+    module = importlib.import_module(module_name)
+    for function_name in function_names:
+        assert getattr(runner, function_name) is getattr(module, function_name)
