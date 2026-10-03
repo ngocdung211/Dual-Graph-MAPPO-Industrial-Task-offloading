@@ -31,7 +31,7 @@ WANDB_HISTORY_KEYS = {
     "performance/energy_joules": "energy_j",
 }
 MODEL_STYLES = {
-    "e-ATN-MADDPG": {"color": "#4C78A8", "linestyle": "--"},
+    "e-ATN-MADDPG": {"color": "#4CA8A0", "linestyle": "--"},
     "Shared MAPPO": {"color": "#F58518", "linestyle": "-."},
     "Shared Mask MAPPO": {"color": "#54A24B", "linestyle": ":"},
     "Graph-GAT MAPPO": {"color": "#B279A2", "linestyle": (0, (6, 2))},
@@ -45,7 +45,7 @@ MODEL_LABELS = {
     "e-ATN-MADDPG": "e-ATN-MADDPG",
     "Shared MAPPO": "MAPPO",
     "Shared Mask MAPPO": "Mask MAPPO",
-    "Graph-GAT MAPPO": "CW-GAT-MAPPO",
+    "Graph-GAT MAPPO": "Graph-GAT-MAPPO",
     "Graph-GAT Mask MAPPO": "Graph Mask MAPPO",
     "MAPPO": "MAPPO (independent)",
     "Mask MAPPO": "Mask MAPPO (independent)",
