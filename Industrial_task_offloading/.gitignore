@@ -37,3 +37,4 @@ tests/*
 plots/
 wandb/
 paper/
+figures/
