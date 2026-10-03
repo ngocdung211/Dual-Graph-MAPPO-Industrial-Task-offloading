@@ -241,9 +241,9 @@ def build_topology_scenarios(
             # Explicit radii take precedence for this scenario's default profile.
             # S1-S3, S4-S6, S7-S9; the middle server in each module is 15 m.
             coverage_radii=(
-                12.0, 15.0, 12.0,
-                12.0, 15.0, 12.0,
-                12.0, 15.0, 12.0,
+                15.0, 18.0, 15.0,
+                15.0, 18.0, 15.0,
+                15.0, 18.0, 15.0,
             ),
             route_rectangles=modular_cell_routes(),
             world_size=(180.0, 120.0),
