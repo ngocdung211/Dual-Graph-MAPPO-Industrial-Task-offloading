@@ -54,9 +54,8 @@ Goal: make the plan match the code before adding new experiments.
 ### Separate library-GAT ablation — 2026-10-04
 
 - [x] Add opt-in `PyG-GAT MAPPO` alongside custom `Graph-GAT MAPPO`.
-  Only this variant's topology encoder uses edge-aware PyG `GATConv`.
-- [x] Verify graph batching, gradients, GAE/PPO updates, checkpoint round-trip,
-  and a paired one-episode real-data CPU smoke; preserve separate outputs.
+- [x] Complete the focused checks and smoke recorded in the
+  [experiment plan](experiment_plan.md#separate-library-gat-experiment-2026-10-04).
 - [ ] Run matched full training with multiple seeds after agreeing the budget.
   No performance conclusion follows from the smoke run.
 - Settings and evidence: [experiment plan](experiment_plan.md#separate-library-gat-experiment-2026-10-04),

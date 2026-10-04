@@ -172,6 +172,13 @@ For optional W&B monitoring:
 python -m pip install -r requirements-wandb.txt
 ```
 
+For the optional library-GAT experiment, install
+[requirements-pyg.txt](Industrial_task_offloading/requirements-pyg.txt):
+
+```bash
+python -m pip install -r requirements-pyg.txt
+```
+
 For CUDA training, install the PyTorch build recommended by the official
 [PyTorch installation selector](https://pytorch.org/get-started/locally/). The
 environment simulator remains on CPU; CUDA acceleration applies to the
@@ -263,18 +270,15 @@ python run_comparision.py \
   --note paper-comparison
 ```
 
-When `--algorithms` is omitted, the current configuration runs:
+When `--algorithms` is omitted, the runner selects every non-opt-in entry in
+[the algorithm configuration](Industrial_task_offloading/utils/comparison/algorithm_config.py#L47).
 
-- Local Only and Edge Only;
-- MAPPO and Mask-MAPPO;
-- Graph-GAT MAPPO;
-- Graph-GAT Warmup MAPPO;
-- Graph-GAT Mask MAPPO; and
-- Graph-GAT Warmup Mask MAPPO.
-
-MADDPG/e-ATN-MADDPG, MAAC, random offloading, and feature-extraction-only
-baselines are implemented but currently commented out in the default comparison
-configuration.
+The separate `PyG-GAT MAPPO` experiment requires explicit selection with
+`--algorithms "PyG-GAT MAPPO"` and the optional dependency above. For a paired
+comparison command and verification status, see the
+[experiment plan](Industrial_task_offloading/docs/experiment_plan.md#separate-library-gat-experiment-2026-10-04);
+for encoder details, see the
+[architecture](Industrial_task_offloading/docs/dual_gat_mappo_architecture.md#separate-pyg-gat-mappo-experiment-2026-10-04).
 
 ### Train the standalone e-ATN-MADDPG path
 

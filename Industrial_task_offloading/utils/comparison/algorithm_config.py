@@ -275,7 +275,8 @@ def select_algorithm_configs(
 
     Args:
         algorithm_configs: All configured algorithms keyed by display name.
-        requested_algorithms: Optional exact names requested by the CLI.
+        requested_algorithms: Optional exact names requested by the CLI. When
+            absent or empty, select all non-opt-in configurations.
 
     Returns:
         Selected algorithm configuration mapping.

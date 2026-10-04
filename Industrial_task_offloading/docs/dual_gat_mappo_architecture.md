@@ -409,8 +409,8 @@ use the same controller, actor/critic heads, rollout buffer, and PPO estimator
 settings. The new encoder uses PyTorch Geometric `GATConv`, not custom attention
 or message aggregation. Task-priority GAT remains unchanged.
 
-The PyG topology encoder has two single-head layers `14→64→64`, with ELU
-between them, `edge_dim=7`, dropout 0, LeakyReLU slope 0.2, no output bias, and
+At the registered default widths, the PyG topology encoder has two single-head
+layers `14→64→64`, with ELU between them, `edge_dim=7`, dropout 0, LeakyReLU slope 0.2, no output bias, and
 no residual projection. Self-loops receive zero-valued edge attributes to match
 the custom encoder. Edge attributes influence attention; messages contain
 projected node features rather than the custom `Wn xu + We euv` messages.
@@ -425,22 +425,15 @@ encoder weights. The registered PyG variant matches unmasked, no-warmup
 `Graph-GAT MAPPO`; lightweight one-way topology is unsupported. GAE remains
 optional via `--use-gae`, and minibatch count follows `--num-minibatches`.
 
-Install the optional dependency with `python -m pip install -r
-requirements-pyg.txt`. Select the variant with `--algorithms "PyG-GAT MAPPO"`;
-default comparisons exclude it so existing runs do not need PyG. Checkpoints
-retain `encoder_backend="pyg"` in `agent_kwargs`, and filenames use the separate
-algorithm name. Custom and PyG encoder checkpoints have different parameter
-keys and must be loaded with their matching backend.
+Installation and selection are documented in the [README](../../README.md#installation).
+Checkpoints retain `encoder_backend="pyg"` in `agent_kwargs`, and filenames use
+the separate algorithm name. Custom and PyG encoder checkpoints have different
+parameter keys and must be loaded with their matching backend.
 
-**Verified on CPU:** independent versus batched local outputs; independent
-versus batched rollout policy/value outputs and gradients; GAE/minibatch PPO
-updates to encoder, actor, and critic; checkpoint prediction round-trip; and a
-paired one-episode run on 399 real local images, `paper_10d_3s`, seed 75,
-GAE enabled, four minibatches, frozen Task-GAT priority enabled. Both saved
-runner checkpoints reload with finite parameters. At default widths on this
-10-device topology, both encoders have 6,272 parameters; actor and critic have
-21,314 and 45,249 parameters respectively. Full training, multiple seeds, GPU
-behavior, and performance superiority remain unverified.
+**Verification and planned work:** see the
+[experiment plan](experiment_plan.md#separate-library-gat-experiment-2026-10-04).
+The [smoke manifest](../experiments/pyg_gat/smoke_manifest.json) owns the recorded
+run settings, parameter counts, and checkpoint reload evidence.
 
 Code and evidence:
 

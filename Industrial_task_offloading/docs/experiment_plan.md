@@ -13,29 +13,24 @@
 
 ## Separate library-GAT experiment (2026-10-04)
 
-- **Implemented:** add `PyG-GAT MAPPO` alongside the custom version, replacing
-  only the topology encoder for this separately registered algorithm. Use
-  edge-aware PyG `GATConv`, two single-head layers, matched widths, zero-valued
-  self-loop attributes, and the existing unmasked/no-warmup controller settings.
-- **Verified:** paired one-episode real-data smoke on `paper_10d_3s`, seed 75,
-  frozen Task-GAT enabled, GAE (`gamma=0.99`, `lambda=0.95`), four minibatches,
-  four PPO epochs, `c_v=1`, `c_e=0.01`, CPU, and effective failed-offload penalty
-  `-1`. Separate checkpoints were saved and reloaded. This is integration
-  evidence only, not a performance comparison.
-- Smoke artifacts: `results/pyg_gat_smoke/2026-10-04_16-53-55-pyg_gat_real_data_smoke`.
-  [Manifest](../experiments/pyg_gat/smoke_manifest.json) records effective kwargs,
-  reward weights, topology/dataset metadata, parameter counts, library versions,
-  and base revision with the uncommitted implementation explicitly identified.
+- **Implemented:** the separate library-GAT ablation described in the
+  [architecture](dual_gat_mappo_architecture.md#separate-pyg-gat-mappo-experiment-2026-10-04).
+- **Verified on CPU:** independent versus batched local outputs; independent
+  versus batched rollout policy/value outputs and gradients; GAE/minibatch PPO
+  updates to encoder, actor, and critic; checkpoint prediction round-trip; and
+  a paired one-episode real-data smoke. Both runner checkpoints were reloaded
+  with finite parameters. This is integration evidence only, not a performance
+  comparison.
+- The [smoke manifest](../experiments/pyg_gat/smoke_manifest.json) owns the
+  effective run settings, artifact paths, dataset metadata, parameter counts,
+  library versions, and validation-file hashes. Its provenance note identifies
+  the uncommitted implementation and subsequent non-behavioral edits.
 - **Planned, not run:** matched full training over multiple seeds; compare mean
   and standard deviation of reward, delay, energy, rejection rate, convergence,
-  and runtime. Both default-width encoders contain 6,272 parameters. Choose
-  the full episode budget, seeds, and topology scope before long training.
+  and runtime. Choose the full episode budget, seeds, and topology scope before
+  long training. GPU behavior and performance superiority remain unverified.
 
-Install the optional dependency in the training environment:
-
-```bash
-python -m pip install -r requirements-pyg.txt
-```
+Install the optional dependency as described in the [README](../../README.md#installation).
 
 Run a short comparison (real dataset required; output directory is separate):
 
@@ -50,8 +45,9 @@ python run_comparision.py \
 
 GAE and minibatching must be enabled identically for both versions. Task-GAT,
 graph edges (including disconnected pairs), actor/critic heads, topology, data,
-reward, action masking, and warmup are held fixed. The PyG encoder still uses
-edge attributes for attention; actor pair features also remain unchanged.
+reward, action masking, and warmup are held fixed. Encoder semantics and actor
+pair features are described in the
+[architecture](dual_gat_mappo_architecture.md#separate-pyg-gat-mappo-experiment-2026-10-04).
 
 ## Historical `-0.5` plan (not the current paper setting)
 
