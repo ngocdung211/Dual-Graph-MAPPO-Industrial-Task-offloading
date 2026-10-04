@@ -30,30 +30,25 @@
   and runtime. Choose the full episode budget, seeds, and topology scope before
   long training. GPU behavior and performance superiority remain unverified.
 
-The separate `PyG-GAT Mask MAPPO` variant enables the existing action mask while
-preserving `PyG-GAT MAPPO` with masking off. Both PyG variants require explicit
-selection. For the masked encoder ablation, use the command below with
+For the masked encoder ablation described in the
+[architecture](dual_gat_mappo_architecture.md#separate-pyg-gat-mappo-experiment-2026-10-04),
+use the command below with
 `--algorithms "Graph-GAT Mask MAPPO" "PyG-GAT Mask MAPPO"` and a separate note
 such as `pyg_gat_mask_real_data_smoke`. Keep masking enabled for both models;
 comparing masked PyG against unmasked custom GAT would change two factors.
 Masked registration, disconnected-link sampling, all-disconnected local
 fallback, PPO updates, and checkpoint restoration are covered by the
 [focused behavioral tests](../tests/test_pyg_topology_gat.py#L1).
-**Verified on CPU:** 47 focused checks passed (one CUDA check skipped), and both
-masked variants completed a paired one-episode run on 399 real local images
-with seed 75, Task-GAT enabled, GAE, and four minibatches. Each completed 500
-transitions and saved a separate checkpoint; both reloaded with finite
-parameters and masking enabled. Settings and artifact paths are recorded in
-the [masked smoke manifest](../experiments/pyg_gat/masked_smoke_manifest.json).
+**Verified on CPU:** both masked variants completed the paired integration smoke
+and reloaded separate checkpoints with finite parameters and masking enabled.
+The [masked smoke manifest](../experiments/pyg_gat/masked_smoke_manifest.json)
+owns the effective settings, dataset metadata, artifact paths, and check counts.
 This verifies integration, not a performance advantage.
 
-**Prepared, not run:** [note.txt](../note.txt#L1) contains three 1000-episode
-commands for seeds 190, 191, and 192 on `modular_cells_30d_9s`, topology seed
-2026, with both PyG variants included alongside the user's eight existing
-algorithms. CUDA, Task-GAT, GAE, four minibatches, 16 MADDPG updates, replay
-actions, W&B online tracking, and the supplied Windows Drive artifact path are
-preserved. The requested `penalty1p5` names are labels only; current effective
-penalty remains `-1`. No reward configuration was changed for these commands.
+**Prepared, not run:** [note.txt](../note.txt#L1) owns the three full-training
+commands and their run settings. The requested `penalty1p5` names are labels
+only; the [current paper setting](#current-paper-setting-2026-09-24) still
+applies. No reward configuration was changed for these commands.
 
 Install the optional dependency as described in the [README](../../README.md#installation).
 

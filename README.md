@@ -273,8 +273,9 @@ python run_comparision.py \
 When `--algorithms` is omitted, the runner selects every non-opt-in entry in
 [the algorithm configuration](Industrial_task_offloading/utils/comparison/algorithm_config.py#L47).
 
-The separate `PyG-GAT MAPPO` experiment requires explicit selection with
-`--algorithms "PyG-GAT MAPPO"` and the optional dependency above. For a paired
+The separate `PyG-GAT MAPPO` and `PyG-GAT Mask MAPPO` experiments require the
+optional dependency above and explicit selection with `--algorithms`, for example
+`--algorithms "PyG-GAT Mask MAPPO"`. For a paired
 comparison command and verification status, see the
 [experiment plan](Industrial_task_offloading/docs/experiment_plan.md#separate-library-gat-experiment-2026-10-04);
 for encoder details, see the

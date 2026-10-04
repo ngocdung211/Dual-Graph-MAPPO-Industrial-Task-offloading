@@ -439,8 +439,10 @@ parameter keys and must be loaded with their matching backend.
 
 **Verification and planned work:** see the
 [experiment plan](experiment_plan.md#separate-library-gat-experiment-2026-10-04).
-The [smoke manifest](../experiments/pyg_gat/smoke_manifest.json) owns the recorded
-run settings, parameter counts, and checkpoint reload evidence.
+The [unmasked smoke manifest](../experiments/pyg_gat/smoke_manifest.json) and
+[masked smoke manifest](../experiments/pyg_gat/masked_smoke_manifest.json) own
+their respective run settings and checkpoint reload evidence; the unmasked
+manifest also records parameter counts.
 
 Code and evidence:
 
