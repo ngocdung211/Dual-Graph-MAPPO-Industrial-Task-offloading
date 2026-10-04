@@ -403,7 +403,8 @@ The encoder has two layers: `14→64`, ELU, then `64→64`.
 
 ### Separate PyG-GAT MAPPO experiment (2026-10-04)
 
-**Implemented:** `PyG-GAT MAPPO` is an explicitly selected comparison variant.
+**Implemented:** `PyG-GAT MAPPO` and `PyG-GAT Mask MAPPO` are explicitly selected
+comparison variants.
 The existing custom `Graph-GAT MAPPO` encoder remains the default. Both variants
 use the same controller, actor/critic heads, rollout buffer, and PPO estimator
 settings. The new encoder uses PyTorch Geometric `GATConv`, not custom attention
@@ -421,8 +422,14 @@ The actor batches independent one-device/all-server graphs and returns device
 embeddings `[T,N,64]` and server embeddings `[T,N,S,64]`. The critic batches
 complete topologies and returns device embeddings `[T,N,64]`. Node-index offsets
 prevent messages crossing local graphs or timesteps. Both paths share the PyG
-encoder weights. The registered PyG variant matches unmasked, no-warmup
-`Graph-GAT MAPPO`; lightweight one-way topology is unsupported. GAE remains
+encoder weights. `PyG-GAT MAPPO` matches unmasked, no-warmup `Graph-GAT MAPPO`;
+`PyG-GAT Mask MAPPO` matches masked, no-warmup `Graph-GAT Mask MAPPO`.
+Only the encoder backend differs within each comparison pair. The mask applies
+to action probabilities in both sampling and PPO updates: disconnected server
+actions receive zero probability, local execution stays valid, and the remaining
+probabilities are renormalized. It does not remove graph edges or edge features.
+See [shared action-mask implementation](../baselines/graph_gat_mappo.py#L553).
+Lightweight one-way topology is unsupported. GAE remains
 optional via `--use-gae`, and minibatch count follows `--num-minibatches`.
 
 Installation and selection are documented in the [README](../../README.md#installation).

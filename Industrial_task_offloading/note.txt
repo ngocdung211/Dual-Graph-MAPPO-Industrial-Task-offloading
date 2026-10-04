@@ -1,32 +1,92 @@
-# Current Windows modular-cell command, followed by historical MacBook Air commands.
-# Activate the project environment first: conda activate task_offloading
-# One-time W&B setup:
-# python -m pip install -r requirements-wandb.txt
-# wandb login
+# Three current Windows modular-cell commands; run from the project directory.
+# Seeds: 190, 191, 192. Each run includes both separate PyG-GAT variants.
+# One-time setup in task_offloading: install requirements-pyg.txt and requirements-wandb.txt;
+# then authenticate with wandb login. These commands use Bash-style line continuations.
+# The requested penalty1p5 name is a label only: current paper_config.py sets
+# lambda5=1.0 and p_out_value=-1.0 (effective penalty -1), not -1.5.
+# The modular-cell scenario currently uses 15/18 m coverage radii.
 set -e
 
-# Current modular-cell paper comparison (Windows path; run from the project directory).
-python run_comparision.py \
-  --algorithms "Shared MAPPO" "GATMA-Adapted" "Graph-GAT MAPPO" \
-    "Graph-GAT Warmup MAPPO" "Graph-GAT Warmup Mask MAPPO" "e-ATN-MADDPG" \
+# Run 190: 1000 episodes for each of the ten algorithms.
+conda run --no-capture-output -n task_offloading python run_comparision.py \
+  --algorithms "Shared MAPPO" "Shared Mask MAPPO" \
+    "Graph-GAT MAPPO" "Graph-GAT Mask MAPPO" \
+    "Graph-GAT Warmup MAPPO" "Graph-GAT Warmup Mask MAPPO" \
+    "PyG-GAT MAPPO" "PyG-GAT Mask MAPPO" \
+    "GATMA-Adapted" "e-ATN-MADDPG" \
   --topology-scenario modular_cells_30d_9s \
+  --topology-seed 2026 \
   --server-profile scenario \
   --episodes 1000 \
-  --experiment-seed 75 \
+  --experiment-seed 190 \
   --task-priority on \
   --use-gae \
   --num-minibatches 4 \
   --maddpg-updates-per-episode 16 \
   --maddpg-actor-replay-actions \
-  --gatma-device cpu \
   --graph-gat-device cuda \
+  --gatma-device cuda \
   --dataset-path dataset/KolektorSDD \
   --local-output-root plots \
   --drive-artifact-root 'G:\My Drive\Dual-Graph-MAPPO-Artifacts' \
   --wandb-mode online \
   --wandb-project industrial-task-offloading \
-  --wandb-group modular_cells_30d_9s-seed75 \
-  --note modular_cells_30d_9s-seed75
+  --wandb-group modular_cells_30d_9s-coverage15_18-penalty1p5-seed190 \
+  --note "modular_cells_30d_9s-coverage15_18-penalty1p5-seed190"
+
+# Run 191: 1000 episodes for each of the ten algorithms.
+conda run --no-capture-output -n task_offloading python run_comparision.py \
+  --algorithms "Shared MAPPO" "Shared Mask MAPPO" \
+    "Graph-GAT MAPPO" "Graph-GAT Mask MAPPO" \
+    "Graph-GAT Warmup MAPPO" "Graph-GAT Warmup Mask MAPPO" \
+    "PyG-GAT MAPPO" "PyG-GAT Mask MAPPO" \
+    "GATMA-Adapted" "e-ATN-MADDPG" \
+  --topology-scenario modular_cells_30d_9s \
+  --topology-seed 2026 \
+  --server-profile scenario \
+  --episodes 1000 \
+  --experiment-seed 191 \
+  --task-priority on \
+  --use-gae \
+  --num-minibatches 4 \
+  --maddpg-updates-per-episode 16 \
+  --maddpg-actor-replay-actions \
+  --graph-gat-device cuda \
+  --gatma-device cuda \
+  --dataset-path dataset/KolektorSDD \
+  --local-output-root plots \
+  --drive-artifact-root 'G:\My Drive\Dual-Graph-MAPPO-Artifacts' \
+  --wandb-mode online \
+  --wandb-project industrial-task-offloading \
+  --wandb-group modular_cells_30d_9s-coverage15_18-penalty1p5-seed191 \
+  --note "modular_cells_30d_9s-coverage15_18-penalty1p5-seed191"
+
+# Run 192: 1000 episodes for each of the ten algorithms.
+conda run --no-capture-output -n task_offloading python run_comparision.py \
+  --algorithms "Shared MAPPO" "Shared Mask MAPPO" \
+    "Graph-GAT MAPPO" "Graph-GAT Mask MAPPO" \
+    "Graph-GAT Warmup MAPPO" "Graph-GAT Warmup Mask MAPPO" \
+    "PyG-GAT MAPPO" "PyG-GAT Mask MAPPO" \
+    "GATMA-Adapted" "e-ATN-MADDPG" \
+  --topology-scenario modular_cells_30d_9s \
+  --topology-seed 2026 \
+  --server-profile scenario \
+  --episodes 1000 \
+  --experiment-seed 192 \
+  --task-priority on \
+  --use-gae \
+  --num-minibatches 4 \
+  --maddpg-updates-per-episode 16 \
+  --maddpg-actor-replay-actions \
+  --graph-gat-device cuda \
+  --gatma-device cuda \
+  --dataset-path dataset/KolektorSDD \
+  --local-output-root plots \
+  --drive-artifact-root 'G:\My Drive\Dual-Graph-MAPPO-Artifacts' \
+  --wandb-mode online \
+  --wandb-project industrial-task-offloading \
+  --wandb-group modular_cells_30d_9s-coverage15_18-penalty1p5-seed192 \
+  --note "modular_cells_30d_9s-coverage15_18-penalty1p5-seed192"
 
 # Historical command (removed CLI flags): python run_comparision.py --topology-scenario paper_10d_3s --episodes 1000 --experiment-seed 175 --graph-gat-device cpu --hyperparameters-dir configs/hyperparameters/unmasked_penalty_0_5 --note penalty_0_5_best_paper_1000ep_seed175 --wandb-mode online --wandb-group penalty_0_5_best_1000ep_seed175 --algorithms "e-ATN-MADDPG" "MAPPO" "Graph-GAT MAPPO" "Graph-GAT Warmup MAPPO"
 

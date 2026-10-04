@@ -65,6 +65,16 @@ def test_pyg_registry_preserves_custom_and_default_selection():
     assert pyg == {**custom, "encoder_backend": "pyg"}
     assert "PyG-GAT MAPPO" not in select_algorithm_configs(configs, None)
     assert "PyG-GAT MAPPO" in select_algorithm_configs(configs, ["PyG-GAT MAPPO"])
+    masked = configs["PyG-GAT Mask MAPPO"]["kwargs"]
+    assert masked == {
+        **configs["Graph-GAT Mask MAPPO"]["kwargs"], "encoder_backend": "pyg",
+    }
+    assert masked == {**pyg, "use_action_mask": True}
+    assert "PyG-GAT Mask MAPPO" not in select_algorithm_configs(configs, None)
+    selected = select_algorithm_configs(
+        configs, ["Graph-GAT Mask MAPPO", "PyG-GAT Mask MAPPO"],
+    )
+    assert list(selected) == ["Graph-GAT Mask MAPPO", "PyG-GAT Mask MAPPO"]
     agent = GraphGATMAPPOAgent(
         num_devices=2, num_servers=2, node_feature_dim=14, edge_feature_dim=7,
     )
@@ -116,10 +126,11 @@ def test_pyg_rollout_outputs_and_gradients_match_sequential_graphs():
         )
 
 
-def test_pyg_ppo_update_and_checkpoint_round_trip(tmp_path):
+@pytest.mark.parametrize("use_action_mask", [False, True])
+def test_pyg_ppo_update_and_checkpoint_round_trip(tmp_path, use_action_mask):
     """GAE training changes all PPO modules and preserves saved predictions."""
     torch.manual_seed(29)
-    agent = _make_agent(ppo_epochs=2)
+    agent = _make_agent(ppo_epochs=2, use_action_mask=use_action_mask)
     before = {
         name: [parameter.detach().clone() for parameter in module.parameters()]
         for name, module in (
@@ -148,7 +159,7 @@ def test_pyg_ppo_update_and_checkpoint_round_trip(tmp_path):
         checkpoint[name] = module.state_dict()
     checkpoint_path = tmp_path / "pyg_checkpoint.pt"
     torch.save(checkpoint, checkpoint_path)
-    restored = _make_agent()
+    restored = _make_agent(use_action_mask=use_action_mask)
     for name, state in torch.load(checkpoint_path, weights_only=True).items():
         getattr(restored, name).load_state_dict(state)
     assert isinstance(restored.encoder, PyGTopologyGATEncoder)
@@ -158,3 +169,27 @@ def test_pyg_ppo_update_and_checkpoint_round_trip(tmp_path):
         restored._actor_probabilities_for_graph_state(graph),
     )
     torch.testing.assert_close(agent._encode_graph(graph), restored._encode_graph(graph))
+
+
+def test_pyg_mask_blocks_disconnected_servers_and_keeps_local_execution():
+    """Registered mask variant samples only feasible actions, even without links."""
+    config = build_algorithm_configs()["PyG-GAT Mask MAPPO"]
+    agent = config["class"](
+        num_devices=2, num_servers=2, node_feature_dim=14, edge_feature_dim=7,
+        **config["kwargs"],
+    )
+    graph = _make_graph_state()
+    # Device 0 can reach only server 2; device 1 has no connected servers.
+    connected = torch.tensor([[0.0, 1.0], [0.0, 0.0]])
+    graph.edge_features.reshape(2, 2, 2, 7)[..., 2] = connected.unsqueeze(-1)
+    probabilities = agent._actor_probabilities_for_graph_state(graph)
+    torch.testing.assert_close(probabilities.sum(dim=-1), torch.ones(2))
+    assert probabilities[0, 1] == 0
+    assert probabilities[0, 0] > 0
+    assert probabilities[0, 2] > 0
+    torch.testing.assert_close(probabilities[1], torch.tensor([1.0, 0.0, 0.0]))
+    for _ in range(10):
+        actions, log_probs = agent.select_actions_with_log_probs(graph)
+        assert actions[0] in (0, 2)
+        assert actions[1] == 0
+        assert torch.isfinite(torch.tensor(log_probs)).all()
