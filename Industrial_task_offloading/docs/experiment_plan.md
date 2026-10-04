@@ -30,6 +30,26 @@
   and runtime. Choose the full episode budget, seeds, and topology scope before
   long training. GPU behavior and performance superiority remain unverified.
 
+For the masked encoder ablation described in the
+[architecture](dual_gat_mappo_architecture.md#separate-pyg-gat-mappo-experiment-2026-10-04),
+use the command below with
+`--algorithms "Graph-GAT Mask MAPPO" "PyG-GAT Mask MAPPO"` and a separate note
+such as `pyg_gat_mask_real_data_smoke`. Keep masking enabled for both models;
+comparing masked PyG against unmasked custom GAT would change two factors.
+Masked registration, disconnected-link sampling, all-disconnected local
+fallback, PPO updates, and checkpoint restoration are covered by the
+[focused behavioral tests](../tests/test_pyg_topology_gat.py#L1).
+**Verified on CPU:** both masked variants completed the paired integration smoke
+and reloaded separate checkpoints with finite parameters and masking enabled.
+The [masked smoke manifest](../experiments/pyg_gat/masked_smoke_manifest.json)
+owns the effective settings, dataset metadata, artifact paths, and check counts.
+This verifies integration, not a performance advantage.
+
+**Prepared, not run:** [note.txt](../note.txt#L1) owns the three full-training
+commands and their run settings. The requested `penalty1p5` names are labels
+only; the [current paper setting](#current-paper-setting-2026-09-24) still
+applies. No reward configuration was changed for these commands.
+
 Install the optional dependency as described in the [README](../../README.md#installation).
 
 Run a short comparison (real dataset required; output directory is separate):

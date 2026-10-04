@@ -1,2 +1,2 @@
-# Optional dependency for the separate PyG-GAT MAPPO experiment.
+# Optional dependency for the separate PyG-GAT MAPPO variants; see README.md.
 torch-geometric==2.8.0
