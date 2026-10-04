@@ -80,7 +80,7 @@ PAPER_PARAMS: Dict[str, Dict[str, float]] = {
         "mappo_ppo_epochs": 4,
         "mappo_entropy_coef": 0.01,
         "mappo_value_loss_coef": 1.0,
-        "mappo_max_grad_norm": 0.5,
+        "mappo_max_grad_norm": 0.3,
         "mappo_hidden_dim": 64,
         "mappo_use_action_mask": True,
         # Fixed PPO estimator settings shared by every MAPPO-family agent.
@@ -94,7 +94,7 @@ PAPER_PARAMS: Dict[str, Dict[str, float]] = {
         "graph_gat_ppo_epochs": 4,
         "graph_gat_entropy_coef": 0.01,
         "graph_gat_value_loss_coef": 1.0,
-        "graph_gat_max_grad_norm": 0.,
+        "graph_gat_max_grad_norm": 0.3,
         "graph_gat_use_action_mask": True,
         "graph_gat_topology_warmup_episodes": 15,
         "graph_gat_topology_warmup_updates_per_step": 15,
