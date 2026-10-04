@@ -1,5 +1,5 @@
 # Three current Windows modular-cell commands; run from the project directory.
-# Seeds: 190, 191, 192. Each run includes both separate PyG-GAT variants.
+# Seeds: 190, 191, 192. Each run includes all four separate PyG-GAT variants.
 # One-time setup in task_offloading: install requirements-pyg.txt and requirements-wandb.txt;
 # then authenticate with wandb login. These commands use Bash-style line continuations.
 # The requested penalty1p5 name is a label only: current paper_config.py sets
@@ -7,12 +7,13 @@
 # The modular-cell scenario currently uses 15/18 m coverage radii.
 set -e
 
-# Run 190: 1000 episodes for each of the ten algorithms.
+# Run 190: 1000 episodes for each of the twelve algorithms.
 conda run --no-capture-output -n task_offloading python run_comparision.py \
   --algorithms "Shared MAPPO" "Shared Mask MAPPO" \
     "Graph-GAT MAPPO" "Graph-GAT Mask MAPPO" \
     "Graph-GAT Warmup MAPPO" "Graph-GAT Warmup Mask MAPPO" \
     "PyG-GAT MAPPO" "PyG-GAT Mask MAPPO" \
+    "PyG-GAT Warmup MAPPO" "PyG-GAT Warmup Mask MAPPO" \
     "GATMA-Adapted" "e-ATN-MADDPG" \
   --topology-scenario modular_cells_30d_9s \
   --topology-seed 2026 \
@@ -34,12 +35,13 @@ conda run --no-capture-output -n task_offloading python run_comparision.py \
   --wandb-group modular_cells_30d_9s-coverage15_18-penalty1p5-seed190 \
   --note "modular_cells_30d_9s-coverage15_18-penalty1p5-seed190"
 
-# Run 191: 1000 episodes for each of the ten algorithms.
+# Run 191: 1000 episodes for each of the twelve algorithms.
 conda run --no-capture-output -n task_offloading python run_comparision.py \
   --algorithms "Shared MAPPO" "Shared Mask MAPPO" \
     "Graph-GAT MAPPO" "Graph-GAT Mask MAPPO" \
     "Graph-GAT Warmup MAPPO" "Graph-GAT Warmup Mask MAPPO" \
     "PyG-GAT MAPPO" "PyG-GAT Mask MAPPO" \
+    "PyG-GAT Warmup MAPPO" "PyG-GAT Warmup Mask MAPPO" \
     "GATMA-Adapted" "e-ATN-MADDPG" \
   --topology-scenario modular_cells_30d_9s \
   --topology-seed 2026 \
@@ -61,12 +63,13 @@ conda run --no-capture-output -n task_offloading python run_comparision.py \
   --wandb-group modular_cells_30d_9s-coverage15_18-penalty1p5-seed191 \
   --note "modular_cells_30d_9s-coverage15_18-penalty1p5-seed191"
 
-# Run 192: 1000 episodes for each of the ten algorithms.
+# Run 192: 1000 episodes for each of the twelve algorithms.
 conda run --no-capture-output -n task_offloading python run_comparision.py \
   --algorithms "Shared MAPPO" "Shared Mask MAPPO" \
     "Graph-GAT MAPPO" "Graph-GAT Mask MAPPO" \
     "Graph-GAT Warmup MAPPO" "Graph-GAT Warmup Mask MAPPO" \
     "PyG-GAT MAPPO" "PyG-GAT Mask MAPPO" \
+    "PyG-GAT Warmup MAPPO" "PyG-GAT Warmup Mask MAPPO" \
     "GATMA-Adapted" "e-ATN-MADDPG" \
   --topology-scenario modular_cells_30d_9s \
   --topology-seed 2026 \

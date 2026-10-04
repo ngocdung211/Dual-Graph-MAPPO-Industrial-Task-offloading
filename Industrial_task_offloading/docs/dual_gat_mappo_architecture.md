@@ -403,9 +403,10 @@ The encoder has two layers: `14→64`, ELU, then `64→64`.
 
 ### Separate PyG-GAT MAPPO experiment (2026-10-04)
 
-**Implemented:** `PyG-GAT MAPPO` and `PyG-GAT Mask MAPPO` are explicitly selected
+**Implemented:** `PyG-GAT MAPPO`, `PyG-GAT Mask MAPPO`,
+`PyG-GAT Warmup MAPPO`, and `PyG-GAT Warmup Mask MAPPO` are explicitly selected
 comparison variants.
-The existing custom `Graph-GAT MAPPO` encoder remains the default. Both variants
+The existing custom `Graph-GAT MAPPO` encoder remains the default. All four variants
 use the same controller, actor/critic heads, rollout buffer, and PPO estimator
 settings. The new encoder uses PyTorch Geometric `GATConv`, not custom attention
 or message aggregation. Task-priority GAT remains unchanged.
@@ -424,7 +425,16 @@ complete topologies and returns device embeddings `[T,N,64]`. Node-index offsets
 prevent messages crossing local graphs or timesteps. Both paths share the PyG
 encoder weights. `PyG-GAT MAPPO` matches unmasked, no-warmup `Graph-GAT MAPPO`;
 `PyG-GAT Mask MAPPO` matches masked, no-warmup `Graph-GAT Mask MAPPO`.
-Only the encoder backend differs within each comparison pair. The mask applies
+`PyG-GAT Warmup MAPPO` and `PyG-GAT Warmup Mask MAPPO` copy their
+corresponding custom Warmup configurations. Only the encoder backend differs
+within each comparison pair. Warmup uses the shared auxiliary head and loss,
+updating the PyG encoder and auxiliary head before action sampling; PPO continues
+from the first episode. Its Adam learning rate is 0.001, with 15 auxiliary updates
+per step during the first 15 episodes. Auxiliary updates have no gradient clipping;
+PPO clips the combined encoder/actor/critic norm to 0.3.
+See [variant registration](../utils/comparison/algorithm_config.py#L261) and
+[shared warmup update](../baselines/graph_gat_mappo.py#L336).
+The three current commands in [note.txt](../note.txt#L10) include all four PyG variants. The mask applies
 to action probabilities in both sampling and PPO updates: disconnected server
 actions receive zero probability, local execution stays valid, and the remaining
 probabilities are renormalized. It does not remove graph edges or edge features.
@@ -436,6 +446,16 @@ Installation and selection are documented in the [README](../../README.md#instal
 Checkpoints retain `encoder_backend="pyg"` in `agent_kwargs`, and filenames use
 the separate algorithm name. Custom and PyG encoder checkpoints have different
 parameter keys and must be loaded with their matching backend.
+
+**Warmup verification:** parameterized CPU checks exercise both registered PyG
+Warmup variants with 15 auxiliary updates, verify finite loss and sampled
+log-probabilities, encoder/auxiliary-head parameter changes, unchanged actor/critic
+parameters, and the episode-15 cutoff. See
+[warmup behavior tests](../tests/test_pyg_topology_gat.py#L199). Long PyG warmup
+experiments remain planned; these checks do not establish reward improvements.
+The broader local suite has a pre-existing custom registry assertion expecting
+five warmup episodes instead of the current 15; it also fails with unchanged
+HEAD configuration. That legacy assertion does not describe current defaults.
 
 **Verification and planned work:** see the
 [experiment plan](experiment_plan.md#separate-library-gat-experiment-2026-10-04).
@@ -550,15 +570,15 @@ parameters**. The centralized critic is training-only.
 
 ## 5. Warmup, rollout, and MAPPO update
 
-For Warmup variants, ten auxiliary updates are performed before each joint
-action during the first five episodes. Warmup and MAPPO therefore coexist;
+For registered custom and PyG Warmup variants, 15 auxiliary updates are performed
+before each joint action during the first 15 episodes. Warmup and MAPPO therefore coexist;
 MAPPO is active from episode 1. Non-Warmup variants perform no auxiliary updates.
 
 > **Code locations:**
 >
-> - Warmup settings: [utils/paper_config.py:88–90](../utils/paper_config.py#L88-L90).
+> - Warmup settings: [current warmup settings](../utils/paper_config.py#L100).
 > - Episode activation: [baselines/graph_gat_mappo.py:318–324](../baselines/graph_gat_mappo.py#L318-L324).
-> - Warmup before action sampling: [run_comparision.py:1125–1138](../run_comparision.py#L1125-L1138).
+> - Warmup before action sampling: [warmup before action sampling](../run_comparision.py#L315).
 
 ```text
 Local embeddings:
@@ -572,7 +592,7 @@ L_aux = BCEWithLogits(feasibility) + 0.5 × MSE(window length)
 ```
 
 Warmup updates `Topology-GAT + warmup head`; it does not update the actor or
-critic. After episode 5, only the auxiliary updates stop.
+critic. After episode 15, only the auxiliary updates stop.
 
 > **Code locations:**
 >
@@ -595,7 +615,7 @@ sequenceDiagram
         T->>M: initialize state [30,46]
         loop each subtask index
             M->>M: build graph
-            M->>M: optional 10-step warmup
+            M->>M: optional 15-step warmup
             M->>M: sample joint action [30]
             M->>B: store transition
         end
@@ -840,7 +860,7 @@ gradients are combined in the same backward pass.
 
 1. **Priority order:** the highest-scoring ready-node sort respects DAG
    dependencies. The environment also validates the resulting order.
-2. **Warmup behavior policy:** during the first five episodes, auxiliary steps
+2. **Warmup behavior policy:** during the first 15 episodes, auxiliary steps
    modify the encoder while the rollout is being collected; the behavior policy
    is therefore not fixed throughout those episodes.
 3. **Slot boundary:** the stored next graph after subtask 5 is generated before

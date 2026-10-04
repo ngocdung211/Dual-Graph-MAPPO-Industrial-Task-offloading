@@ -258,6 +258,18 @@ def build_algorithm_configs(
             "encoder_backend": "pyg",
         },
     }
+    for custom_name, pyg_name in (
+        ("Graph-GAT Warmup MAPPO", "PyG-GAT Warmup MAPPO"),
+        ("Graph-GAT Warmup Mask MAPPO", "PyG-GAT Warmup Mask MAPPO"),
+    ):
+        configs[pyg_name] = {
+            "class": GraphGATMAPPOAgent,
+            "opt_in": True,
+            "kwargs": {
+                **configs[custom_name]["kwargs"],
+                "encoder_backend": "pyg",
+            },
+        }
     ppo_estimator_kwargs = {
         "use_gae": bool(use_gae),
         "gae_lambda": float(provisional["ppo_gae_lambda"]),

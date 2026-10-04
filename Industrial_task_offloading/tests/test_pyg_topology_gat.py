@@ -193,3 +193,50 @@ def test_pyg_mask_blocks_disconnected_servers_and_keeps_local_execution():
         assert actions[0] in (0, 2)
         assert actions[1] == 0
         assert torch.isfinite(torch.tensor(log_probs)).all()
+
+
+@pytest.mark.parametrize("masked", [False, True])
+def test_pyg_warmup_updates_only_encoder_and_auxiliary_head(masked):
+    """Registered warmup trains PyG while preserving PPO heads and schedule."""
+    torch.manual_seed(37)
+    suffix = " Mask MAPPO" if masked else " MAPPO"
+    custom_name = "Graph-GAT Warmup" + suffix
+    pyg_name = "PyG-GAT Warmup" + suffix
+    configs = build_algorithm_configs(
+        graph_gat_device="cpu", use_gae=True, num_minibatches=4,
+    )
+    config = configs[pyg_name]
+    assert config["kwargs"] == {
+        **configs[custom_name]["kwargs"], "encoder_backend": "pyg",
+    }
+    assert pyg_name not in select_algorithm_configs(configs, None)
+    assert pyg_name in select_algorithm_configs(configs, [pyg_name])
+    agent = config["class"](
+        num_devices=2, num_servers=2, node_feature_dim=14, edge_feature_dim=7,
+        **config["kwargs"],
+    )
+    assert isinstance(agent.encoder, PyGTopologyGATEncoder)
+    assert agent.use_action_mask is masked
+    assert agent.should_warmup_topology(0)
+    assert agent.should_warmup_topology(14)
+    assert not agent.should_warmup_topology(15)
+    assert agent.topology_warmup_updates_per_step == 15
+    assert agent.topology_warmup_optimizer.param_groups[0]["lr"] == 0.001
+    before = {
+        name: [parameter.detach().clone() for parameter in getattr(agent, name).parameters()]
+        for name in ("encoder", "topology_warmup_head", "actor", "critic")
+    }
+    graph = _make_graph_state()
+    loss = agent.warmup_topology_encoder(
+        graph, agent.topology_warmup_updates_per_step,
+    )
+    assert torch.isfinite(torch.tensor(loss))
+    for name, old_parameters in before.items():
+        changed = any(
+            not torch.equal(old, new)
+            for old, new in zip(old_parameters, getattr(agent, name).parameters())
+        )
+        assert changed == (name in ("encoder", "topology_warmup_head"))
+    actions, log_probs = agent.select_actions_with_log_probs(graph)
+    assert len(actions) == 2
+    assert torch.isfinite(torch.tensor(log_probs)).all()
