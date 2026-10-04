@@ -34,6 +34,7 @@ tests/*
 !tests/test_gatma.py
 !tests/test_topology_scenarios_config.py
 !tests/test_local_artifact_workflow.py
+!tests/test_pyg_topology_gat.py
 plots/
 wandb/
 paper/

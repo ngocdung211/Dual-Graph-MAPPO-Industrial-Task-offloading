@@ -11,6 +11,48 @@
 - Before ablations, record the actual reward weights, seed, topology, model
   settings, and code revision for each new run.
 
+## Separate library-GAT experiment (2026-10-04)
+
+- **Implemented:** add `PyG-GAT MAPPO` alongside the custom version, replacing
+  only the topology encoder for this separately registered algorithm. Use
+  edge-aware PyG `GATConv`, two single-head layers, matched widths, zero-valued
+  self-loop attributes, and the existing unmasked/no-warmup controller settings.
+- **Verified:** paired one-episode real-data smoke on `paper_10d_3s`, seed 75,
+  frozen Task-GAT enabled, GAE (`gamma=0.99`, `lambda=0.95`), four minibatches,
+  four PPO epochs, `c_v=1`, `c_e=0.01`, CPU, and effective failed-offload penalty
+  `-1`. Separate checkpoints were saved and reloaded. This is integration
+  evidence only, not a performance comparison.
+- Smoke artifacts: `results/pyg_gat_smoke/2026-10-04_16-53-55-pyg_gat_real_data_smoke`.
+  [Manifest](../experiments/pyg_gat/smoke_manifest.json) records effective kwargs,
+  reward weights, topology/dataset metadata, parameter counts, library versions,
+  and base revision with the uncommitted implementation explicitly identified.
+- **Planned, not run:** matched full training over multiple seeds; compare mean
+  and standard deviation of reward, delay, energy, rejection rate, convergence,
+  and runtime. Both default-width encoders contain 6,272 parameters. Choose
+  the full episode budget, seeds, and topology scope before long training.
+
+Install the optional dependency in the training environment:
+
+```bash
+python -m pip install -r requirements-pyg.txt
+```
+
+Run a short comparison (real dataset required; output directory is separate):
+
+```bash
+python run_comparision.py \
+  --algorithms "Graph-GAT MAPPO" "PyG-GAT MAPPO" \
+  --topology-scenario paper_10d_3s --episodes 1 --experiment-seed 75 \
+  --use-gae --num-minibatches 4 --graph-gat-device cpu \
+  --wandb-mode disabled --local-output-root results/pyg_gat_comparison \
+  --note pyg_gat_real_data_smoke
+```
+
+GAE and minibatching must be enabled identically for both versions. Task-GAT,
+graph edges (including disconnected pairs), actor/critic heads, topology, data,
+reward, action masking, and warmup are held fixed. The PyG encoder still uses
+edge attributes for attention; actor pair features also remain unchanged.
+
 ## Historical `-0.5` plan (not the current paper setting)
 
 ### Locked configuration

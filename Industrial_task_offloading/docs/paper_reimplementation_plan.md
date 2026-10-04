@@ -51,6 +51,18 @@ Goal: make the plan match the code before adding new experiments.
   - Decision: fix the avoidable Python-loop and repeated-encoding cost first.
   - Impact: optional CUDA support may be reconsidered only after CPU numerical-equivalence and scaling tests pass.
 
+### Separate library-GAT ablation — 2026-10-04
+
+- [x] Add opt-in `PyG-GAT MAPPO` alongside custom `Graph-GAT MAPPO`.
+  Only this variant's topology encoder uses edge-aware PyG `GATConv`.
+- [x] Verify graph batching, gradients, GAE/PPO updates, checkpoint round-trip,
+  and a paired one-episode real-data CPU smoke; preserve separate outputs.
+- [ ] Run matched full training with multiple seeds after agreeing the budget.
+  No performance conclusion follows from the smoke run.
+- Settings and evidence: [experiment plan](experiment_plan.md#separate-library-gat-experiment-2026-10-04),
+  [architecture](dual_gat_mappo_architecture.md#separate-pyg-gat-mappo-experiment-2026-10-04),
+  and [smoke manifest](../experiments/pyg_gat/smoke_manifest.json).
+
 ### Phase 1: Pretrained Topology-GAT Experiment
 
 Goal: test whether the topology encoder helps more when it starts from useful topology knowledge instead of random weights.

@@ -242,6 +242,14 @@ def build_algorithm_configs(
                     },
         },
     }
+    configs["PyG-GAT MAPPO"] = {
+        "class": GraphGATMAPPOAgent,
+        "opt_in": True,
+        "kwargs": {
+            **configs["Graph-GAT MAPPO"]["kwargs"],
+            "encoder_backend": "pyg",
+        },
+    }
     ppo_estimator_kwargs = {
         "use_gae": bool(use_gae),
         "gae_lambda": float(provisional["ppo_gae_lambda"]),
@@ -276,7 +284,12 @@ def select_algorithm_configs(
         ValueError: If any requested algorithm name is not configured.
     """
     if not requested_algorithms:
-        return algorithm_configs
+        # Optional-library experiments must be selected explicitly.
+        return {
+            name: config
+            for name, config in algorithm_configs.items()
+            if not config.get("opt_in", False)
+        }
     # Accept the historical CLI name without running the same baseline twice.
     requested_algorithms = [
         "GATMA-Adapted" if name == "GATMA" else name

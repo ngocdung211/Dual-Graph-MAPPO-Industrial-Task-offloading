@@ -401,6 +401,57 @@ The encoder has two layers: `14→64`, ELU, then `64→64`.
 >
 > - Two-layer encoder and ELU: [models/topology_gat.py:472–530](../models/topology_gat.py#L472-L530).
 
+### Separate PyG-GAT MAPPO experiment (2026-10-04)
+
+**Implemented:** `PyG-GAT MAPPO` is an explicitly selected comparison variant.
+The existing custom `Graph-GAT MAPPO` encoder remains the default. Both variants
+use the same controller, actor/critic heads, rollout buffer, and PPO estimator
+settings. The new encoder uses PyTorch Geometric `GATConv`, not custom attention
+or message aggregation. Task-priority GAT remains unchanged.
+
+The PyG topology encoder has two single-head layers `14→64→64`, with ELU
+between them, `edge_dim=7`, dropout 0, LeakyReLU slope 0.2, no output bias, and
+no residual projection. Self-loops receive zero-valued edge attributes to match
+the custom encoder. Edge attributes influence attention; messages contain
+projected node features rather than the custom `Wn xu + We euv` messages.
+This is an edge-aware library GAT ablation, not an edge-free original-GAT
+reproduction. Initialization follows each implementation's own defaults.
+
+The actor batches independent one-device/all-server graphs and returns device
+embeddings `[T,N,64]` and server embeddings `[T,N,S,64]`. The critic batches
+complete topologies and returns device embeddings `[T,N,64]`. Node-index offsets
+prevent messages crossing local graphs or timesteps. Both paths share the PyG
+encoder weights. The registered PyG variant matches unmasked, no-warmup
+`Graph-GAT MAPPO`; lightweight one-way topology is unsupported. GAE remains
+optional via `--use-gae`, and minibatch count follows `--num-minibatches`.
+
+Install the optional dependency with `python -m pip install -r
+requirements-pyg.txt`. Select the variant with `--algorithms "PyG-GAT MAPPO"`;
+default comparisons exclude it so existing runs do not need PyG. Checkpoints
+retain `encoder_backend="pyg"` in `agent_kwargs`, and filenames use the separate
+algorithm name. Custom and PyG encoder checkpoints have different parameter
+keys and must be loaded with their matching backend.
+
+**Verified on CPU:** independent versus batched local outputs; independent
+versus batched rollout policy/value outputs and gradients; GAE/minibatch PPO
+updates to encoder, actor, and critic; checkpoint prediction round-trip; and a
+paired one-episode run on 399 real local images, `paper_10d_3s`, seed 75,
+GAE enabled, four minibatches, frozen Task-GAT priority enabled. Both saved
+runner checkpoints reload with finite parameters. At default widths on this
+10-device topology, both encoders have 6,272 parameters; actor and critic have
+21,314 and 45,249 parameters respectively. Full training, multiple seeds, GPU
+behavior, and performance superiority remain unverified.
+
+Code and evidence:
+
+- [Library layers and explicit graph path](../models/pyg_topology_gat.py#L19).
+- [Disjoint local graphs](../models/pyg_topology_gat.py#L69) and
+  [global rollout graphs](../models/pyg_topology_gat.py#L117).
+- [Backend selection and shared heads](../baselines/graph_gat_mappo.py#L130).
+- [Separate algorithm registration](../utils/comparison/algorithm_config.py#L245).
+- [Focused checks](../tests/test_pyg_topology_gat.py#L1) and
+  [smoke settings/checkpoint evidence](../experiments/pyg_gat/smoke_manifest.json).
+
 ### Lightweight topology ablation
 
 The optional lightweight representation is implemented in the graph builder and

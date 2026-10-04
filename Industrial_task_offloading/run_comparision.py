@@ -181,7 +181,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional exact algorithm names to run, for example "
-            "--algorithms \"Graph-GAT MAPPO\". Default: run all configured algorithms."
+            "--algorithms \"Graph-GAT MAPPO\". Default: run all standard algorithms; "
+            "optional PyG-GAT MAPPO requires explicit selection."
         ),
     )
     parser.add_argument(
