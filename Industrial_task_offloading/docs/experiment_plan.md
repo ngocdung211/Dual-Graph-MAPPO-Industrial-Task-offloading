@@ -11,6 +11,44 @@
 - Before ablations, record the actual reward weights, seed, topology, model
   settings, and code revision for each new run.
 
+## Separate library-GAT experiment (2026-10-04)
+
+- **Implemented:** the separate library-GAT ablation described in the
+  [architecture](dual_gat_mappo_architecture.md#separate-pyg-gat-mappo-experiment-2026-10-04).
+- **Verified on CPU:** independent versus batched local outputs; independent
+  versus batched rollout policy/value outputs and gradients; GAE/minibatch PPO
+  updates to encoder, actor, and critic; checkpoint prediction round-trip; and
+  a paired one-episode real-data smoke. Both runner checkpoints were reloaded
+  with finite parameters. This is integration evidence only, not a performance
+  comparison.
+- The [smoke manifest](../experiments/pyg_gat/smoke_manifest.json) owns the
+  effective run settings, artifact paths, dataset metadata, parameter counts,
+  library versions, and validation-file hashes. Its provenance note identifies
+  the uncommitted implementation and subsequent non-behavioral edits.
+- **Planned, not run:** matched full training over multiple seeds; compare mean
+  and standard deviation of reward, delay, energy, rejection rate, convergence,
+  and runtime. Choose the full episode budget, seeds, and topology scope before
+  long training. GPU behavior and performance superiority remain unverified.
+
+Install the optional dependency as described in the [README](../../README.md#installation).
+
+Run a short comparison (real dataset required; output directory is separate):
+
+```bash
+python run_comparision.py \
+  --algorithms "Graph-GAT MAPPO" "PyG-GAT MAPPO" \
+  --topology-scenario paper_10d_3s --episodes 1 --experiment-seed 75 \
+  --use-gae --num-minibatches 4 --graph-gat-device cpu \
+  --wandb-mode disabled --local-output-root results/pyg_gat_comparison \
+  --note pyg_gat_real_data_smoke
+```
+
+GAE and minibatching must be enabled identically for both versions. Task-GAT,
+graph edges (including disconnected pairs), actor/critic heads, topology, data,
+reward, action masking, and warmup are held fixed. Encoder semantics and actor
+pair features are described in the
+[architecture](dual_gat_mappo_architecture.md#separate-pyg-gat-mappo-experiment-2026-10-04).
+
 ## Historical `-0.5` plan (not the current paper setting)
 
 ### Locked configuration

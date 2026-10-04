@@ -69,6 +69,7 @@ class GraphGATMAPPOAgent:
         topology_warmup_lr: float = 0.001,
         lightweight_topology: bool = False,
         device: str = "cpu",
+        encoder_backend: str = "custom",
     ):
         """Initialize Graph-GAT MAPPO.
 
@@ -104,6 +105,7 @@ class GraphGATMAPPOAgent:
                 three edge features, and one topology GAT layer.
             device: PyTorch device request: ``cpu``, ``cuda``, ``cuda:<index>``,
                 or ``auto``.
+            encoder_backend: ``custom`` or the separate ``pyg`` GATConv version.
         """
         self.num_devices = num_devices
         self.num_servers = num_servers
@@ -126,7 +128,15 @@ class GraphGATMAPPOAgent:
         self.device = resolve_torch_device(device)
 
         # PPO shares this encoder between the local actor and global critic.
-        self.encoder = TopologyGATEncoder(
+        encoder_class = TopologyGATEncoder
+        if encoder_backend == "pyg":
+            # Import only for the new variant; existing runs do not require PyG.
+            from models.pyg_topology_gat import PyGTopologyGATEncoder
+
+            encoder_class = PyGTopologyGATEncoder
+        elif encoder_backend != "custom":
+            raise ValueError("encoder_backend must be 'custom' or 'pyg'")
+        self.encoder = encoder_class(
             node_feature_dim=node_feature_dim,
             edge_feature_dim=edge_feature_dim,
             hidden_dim=hidden_dim,

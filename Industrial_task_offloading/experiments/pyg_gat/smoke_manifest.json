@@ -1,0 +1,211 @@
+{
+  "purpose": "Real-data integration smoke only; no performance conclusion",
+  "base_revision": "95b1020c908ed29c4b118b45eb30fe9443ea2ed9",
+  "uncommitted_implementation": true,
+  "date": "2026-10-04",
+  "seed": 75,
+  "topology": "paper_10d_3s",
+  "episodes_per_algorithm": 1,
+  "task_priority": "on",
+  "wandb_mode": "disabled",
+  "device": "cpu",
+  "torch": "2.13.0",
+  "torch_geometric": "2.8.0",
+  "artifact_directory": "results/pyg_gat_smoke/2026-10-04_16-53-55-pyg_gat_real_data_smoke",
+  "models": [
+    {
+      "model": "Graph-GAT MAPPO",
+      "agent_kwargs": {
+        "lr": 0.0001,
+        "encoder_lr": 0.0001,
+        "gamma": 0.99,
+        "hidden_dim": 64,
+        "embedding_dim": 64,
+        "clip_param": 0.2,
+        "ppo_epochs": 4,
+        "entropy_coef": 0.01,
+        "value_loss_coef": 1.0,
+        "max_grad_norm": null,
+        "use_action_mask": false,
+        "topology_warmup_episodes": 0,
+        "topology_warmup_updates_per_step": 0,
+        "device": "cpu",
+        "use_gae": true,
+        "gae_lambda": 0.95,
+        "num_minibatches": 4
+      },
+      "parameter_counts": {
+        "encoder": 6272,
+        "actor": 21314,
+        "critic": 45249
+      },
+      "checkpoint": "results/pyg_gat_smoke/2026-10-04_16-53-55-pyg_gat_real_data_smoke/Graph-GAT_MAPPO_checkpoint.pt",
+      "checkpoint_reload": "passed",
+      "reward_weights": {
+        "lambda1": 5.0,
+        "lambda2": 5.0,
+        "lambda3": 5.0,
+        "lambda4": 5.0,
+        "lambda5": 1.0,
+        "p_out_value": -1.0
+      },
+      "topology_metrics": {
+        "name": "paper_10d_3s",
+        "num_devices": 10,
+        "num_servers": 3,
+        "coverage_radius_m": 12.0,
+        "coverage_radii_m": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "coverage_radius_min_m": 12.0,
+        "coverage_radius_max_m": 12.0,
+        "world_size_m": [
+          100.0,
+          100.0
+        ],
+        "topology_seed": 2026,
+        "server_profile": "uniform",
+        "start_points": {
+          "avg_feasible_servers": 0.4,
+          "density": 0.13333333333333333,
+          "zero_link_ratio": 0.6,
+          "multi_link_ratio": 0.0,
+          "device_server_ratio": 3.3333333333333335
+        },
+        "route_samples": {
+          "avg_feasible_servers": 0.29583333333333334,
+          "density": 0.09861111111111111,
+          "zero_link_ratio": 0.7041666666666667,
+          "multi_link_ratio": 0.0,
+          "device_server_ratio": 3.3333333333333335
+        },
+        "dataset": {
+          "dataset_path": "/Users/admin/Working/2026/YZU_Lab_Task_offloading/Industrial_task_offloading/dataset/KolektorSDD",
+          "mode": "real",
+          "total_images": 399,
+          "paper_expected_total_images": 399,
+          "is_paper_count_aligned": true,
+          "min_pixels": 617500,
+          "mean_pixels": 629271.9298245613,
+          "max_pixels": 642500
+        },
+        "physical_compute": {
+          "actual_device_compute_seed": 76,
+          "actual_server_compute_seed": 75,
+          "actual_device_compute_power_min_ghz": 0.8318044128408237,
+          "actual_device_compute_power_mean_ghz": 1.0115446288812204,
+          "actual_device_compute_power_max_ghz": 1.1849240349784882,
+          "actual_device_compute_power_std_ghz": 0.1337557277239438,
+          "actual_server_compute_power_min_ghz": 2.3131928455178885,
+          "actual_server_compute_power_mean_ghz": 2.4015343411739294,
+          "actual_server_compute_power_max_ghz": 2.477622133980051,
+          "actual_server_compute_power_std_ghz": 0.06768487103823542
+        }
+      }
+    },
+    {
+      "model": "PyG-GAT MAPPO",
+      "agent_kwargs": {
+        "lr": 0.0001,
+        "encoder_lr": 0.0001,
+        "gamma": 0.99,
+        "hidden_dim": 64,
+        "embedding_dim": 64,
+        "clip_param": 0.2,
+        "ppo_epochs": 4,
+        "entropy_coef": 0.01,
+        "value_loss_coef": 1.0,
+        "max_grad_norm": null,
+        "use_action_mask": false,
+        "topology_warmup_episodes": 0,
+        "topology_warmup_updates_per_step": 0,
+        "device": "cpu",
+        "encoder_backend": "pyg",
+        "use_gae": true,
+        "gae_lambda": 0.95,
+        "num_minibatches": 4
+      },
+      "parameter_counts": {
+        "encoder": 6272,
+        "actor": 21314,
+        "critic": 45249
+      },
+      "checkpoint": "results/pyg_gat_smoke/2026-10-04_16-53-55-pyg_gat_real_data_smoke/PyG-GAT_MAPPO_checkpoint.pt",
+      "checkpoint_reload": "passed",
+      "reward_weights": {
+        "lambda1": 5.0,
+        "lambda2": 5.0,
+        "lambda3": 5.0,
+        "lambda4": 5.0,
+        "lambda5": 1.0,
+        "p_out_value": -1.0
+      },
+      "topology_metrics": {
+        "name": "paper_10d_3s",
+        "num_devices": 10,
+        "num_servers": 3,
+        "coverage_radius_m": 12.0,
+        "coverage_radii_m": [
+          12.0,
+          12.0,
+          12.0
+        ],
+        "coverage_radius_min_m": 12.0,
+        "coverage_radius_max_m": 12.0,
+        "world_size_m": [
+          100.0,
+          100.0
+        ],
+        "topology_seed": 2026,
+        "server_profile": "uniform",
+        "start_points": {
+          "avg_feasible_servers": 0.4,
+          "density": 0.13333333333333333,
+          "zero_link_ratio": 0.6,
+          "multi_link_ratio": 0.0,
+          "device_server_ratio": 3.3333333333333335
+        },
+        "route_samples": {
+          "avg_feasible_servers": 0.29583333333333334,
+          "density": 0.09861111111111111,
+          "zero_link_ratio": 0.7041666666666667,
+          "multi_link_ratio": 0.0,
+          "device_server_ratio": 3.3333333333333335
+        },
+        "dataset": {
+          "dataset_path": "/Users/admin/Working/2026/YZU_Lab_Task_offloading/Industrial_task_offloading/dataset/KolektorSDD",
+          "mode": "real",
+          "total_images": 399,
+          "paper_expected_total_images": 399,
+          "is_paper_count_aligned": true,
+          "min_pixels": 617500,
+          "mean_pixels": 629271.9298245613,
+          "max_pixels": 642500
+        },
+        "physical_compute": {
+          "actual_device_compute_seed": 76,
+          "actual_server_compute_seed": 75,
+          "actual_device_compute_power_min_ghz": 0.8318044128408237,
+          "actual_device_compute_power_mean_ghz": 1.0115446288812204,
+          "actual_device_compute_power_max_ghz": 1.1849240349784882,
+          "actual_device_compute_power_std_ghz": 0.1337557277239438,
+          "actual_server_compute_power_min_ghz": 2.3131928455178885,
+          "actual_server_compute_power_mean_ghz": 2.4015343411739294,
+          "actual_server_compute_power_max_ghz": 2.477622133980051,
+          "actual_server_compute_power_std_ghz": 0.06768487103823542
+        }
+      }
+    }
+  ],
+  "validated_worktree_sha256": {
+    "models/pyg_topology_gat.py": "36b09096eb1bc5411ee6072e802b6bd3d3c2197ca7c790d2ccd229b6ac154815",
+    "baselines/graph_gat_mappo.py": "af39b88827574713f070e2b499be2a5cd353aaeec09c28aa6137c12c310cb4f9",
+    "utils/comparison/algorithm_config.py": "83a278ad1eff02c3bea1dfefe1fc801ac594506dafabedb21b4b4d9526bdb2f6",
+    "run_comparision.py": "6209f5cbbd40b01de5297d1f4201e59621284d70671d580aea6ec0774b249dcb",
+    "utils/paper_config.py": "d4c7d7be803d4af9546643afe4db55a3b03982901e11d6ebf053e3aa7066bd08",
+    "requirements-pyg.txt": "6f959e5c632f2df92c004a1fadf7c5d96d39c0722ac069b65de6722fb0be6035"
+  },
+  "provenance_note": "Smoke used this uncommitted implementation on the recorded base revision; the validated-file hashes include subsequent non-behavioral typing/formatting edits."
+}

@@ -39,7 +39,7 @@ MODEL_STYLES = {
     "MAPPO": {"color": "#79706E", "linestyle": (0, (5, 2))},
     "Mask MAPPO": {"color": "#9D755D", "linestyle": (0, (3, 1, 1, 1))},
     "Graph-GAT Warmup MAPPO": {"color": "#72B7B2", "linestyle": (0, (4, 1, 1, 1))},
-    "Graph-GAT Warmup Mask MAPPO": {"color": "#E45756", "linestyle": "-"},
+    "Graph-GAT Warmup Mask MAPPO": {"color": "#831717", "linestyle": "-"},
 }
 MODEL_LABELS = {
     "e-ATN-MADDPG": "e-ATN-MADDPG",
