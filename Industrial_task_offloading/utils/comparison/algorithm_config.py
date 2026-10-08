@@ -123,6 +123,7 @@ def build_algorithm_configs(
                 provisional["gatma_replay_updates_per_episode"]
             ),
             "kwargs": {
+                "adaptation_version": 3,
                 "actor_lr": provisional["gatma_actor_lr"],
                 "critic_lr": provisional["gatma_critic_lr"],
                 "device": gatma_device,

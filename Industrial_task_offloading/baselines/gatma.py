@@ -18,6 +18,7 @@ class GATMATopologyBatch:
 
     node_features: torch.Tensor
     connected: torch.Tensor
+    link_windows: torch.Tensor
     local_adjacency: torch.Tensor
     global_adjacency: torch.Tensor
     single_state: bool
@@ -26,7 +27,7 @@ class GATMATopologyBatch:
 def _build_topology_inputs(
     joint_states: torch.Tensor,
     num_servers: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Build shared node features and connectivity from flat joint states."""
     if joint_states.ndim == 2:
         joint_states = joint_states.unsqueeze(0)
@@ -68,7 +69,9 @@ def _build_topology_inputs(
         :, :, window_end_offset : window_end_offset + num_servers
     ]
     connected = window_ends > window_starts
-    return node_features, connected
+    return node_features, connected, torch.stack(
+        (window_starts, window_ends), dim=-1
+    )
 
 
 def _build_local_adjacency(connected: torch.Tensor) -> torch.Tensor:
@@ -105,7 +108,7 @@ def build_gatma_topology_batch(
 ) -> GATMATopologyBatch:
     """Build topology features and adjacency once for all GATMA networks."""
     single_state = joint_states.ndim == 2
-    node_features, connected = _build_topology_inputs(
+    node_features, connected, link_windows = _build_topology_inputs(
         joint_states, num_servers
     )
     batch_size, num_devices, _ = connected.shape
@@ -120,6 +123,7 @@ def build_gatma_topology_batch(
     return GATMATopologyBatch(
         node_features=node_features,
         connected=connected,
+        link_windows=link_windows,
         local_adjacency=local_adjacency,
         global_adjacency=_build_global_adjacency(connected),
         single_state=single_state,
@@ -199,19 +203,29 @@ class GATMAActor(nn.Module):
         hidden_dim: int = 64,
         embedding_dim: int = 64,
         num_heads: int = 4,
+        adaptation_version: int = 3,
     ) -> None:
         """Initialize the input MLP, multi-head GAT, and output MLP."""
         super().__init__()
         self.num_servers = num_servers
         self.agent_index = agent_index
-        self.input_mlp = nn.Linear(node_feature_dim, hidden_dim)
+        self.adaptation_version = adaptation_version
+        local_feature_dim = node_feature_dim + (
+            2 if adaptation_version == 3 else 0
+        )
+        self.input_mlp = nn.Linear(local_feature_dim, hidden_dim)
         self.gat = MultiHeadGraphAttention(
             input_dim=hidden_dim,
             output_dim=embedding_dim,
             num_heads=num_heads,
         )
         self.output_fc1 = nn.Linear(embedding_dim, hidden_dim)
-        self.output_fc2 = nn.Linear(hidden_dim, action_dim)
+        self.output_fc2 = nn.Linear(
+            hidden_dim, 1 if adaptation_version == 3 else action_dim
+        )
+        if adaptation_version == 3:
+            self.server_fc1 = nn.Linear(2 * embedding_dim + 3, hidden_dim)
+            self.server_fc2 = nn.Linear(hidden_dim, 1)
 
     def forward(
         self,
@@ -236,12 +250,44 @@ class GATMAActor(nn.Module):
             ],
             dim=1,
         )
+        if self.adaptation_version == 3:
+            # Windows belong to device-server pairs, not shared server nodes.
+            windows = topology.link_windows[:, self.agent_index]
+            local_windows = torch.cat(
+                [windows.new_zeros((windows.shape[0], 1, 2)), windows], dim=1
+            )
+            local_nodes = torch.cat([local_nodes, local_windows], dim=-1)
         hidden_nodes = F.relu(self.input_mlp(local_nodes))
-        device_embedding = self.gat(
+        embeddings = self.gat(
             hidden_nodes,
             topology.local_adjacency[:, self.agent_index],
-        )[:, 0]
-        logits = self.output_fc2(F.relu(self.output_fc1(device_embedding)))
+        )
+        device_embedding = embeddings[:, 0]
+        local_logits = self.output_fc2(
+            F.relu(self.output_fc1(device_embedding))
+        )
+        if self.adaptation_version == 3:
+            connected = topology.connected[:, self.agent_index].unsqueeze(-1)
+            # Unseen resources cannot affect scores; actions remain available.
+            server_embeddings = embeddings[:, 1:] * connected
+            candidate_features = torch.cat(
+                [
+                    device_embedding.unsqueeze(1).expand(
+                        -1, self.num_servers, -1
+                    ),
+                    server_embeddings,
+                    windows,
+                    connected.to(embeddings.dtype),
+                ],
+                dim=-1,
+            )
+            server_logits = self.server_fc2(
+                F.relu(self.server_fc1(candidate_features))
+            ).squeeze(-1)
+            # Candidate j stays aligned with offloading action j + 1.
+            logits = torch.cat([local_logits, server_logits], dim=-1)
+        else:
+            logits = local_logits
         probabilities = F.softmax(logits, dim=-1)
         return probabilities.squeeze(0) if topology.single_state else probabilities
 
@@ -257,13 +303,18 @@ class GATMACritic(nn.Module):
         hidden_dim: int = 64,
         embedding_dim: int = 64,
         num_heads: int = 4,
+        agent_index: int = 0,
+        adaptation_version: int = 3,
     ) -> None:
         """Initialize the global GAT critic."""
         super().__init__()
         self.num_servers = num_servers
         self.action_dim = action_dim
+        self.agent_index = agent_index
+        self.adaptation_version = adaptation_version
+        context_dim = 3 * num_servers + 1 if adaptation_version == 3 else 0
         self.input_mlp = nn.Linear(
-            node_feature_dim + action_dim, hidden_dim
+            node_feature_dim + action_dim + context_dim, hidden_dim
         )
         self.gat = MultiHeadGraphAttention(
             input_dim=hidden_dim,
@@ -300,11 +351,41 @@ class GATMACritic(nn.Module):
         critic_inputs = torch.cat(
             [topology.node_features, action_features], dim=-1
         )
+        if self.adaptation_version == 3:
+            num_nodes = topology.node_features.shape[1]
+            windows = critic_inputs.new_zeros(
+                (critic_inputs.shape[0], num_nodes, 2 * self.num_servers)
+            )
+            windows[:, :num_devices] = topology.link_windows.flatten(
+                start_dim=2
+            )
+            # Identify resources by the same server slots used by joint actions.
+            server_identity = critic_inputs.new_zeros(
+                (critic_inputs.shape[0], num_nodes, self.num_servers)
+            )
+            server_identity[:, num_devices:] = torch.eye(
+                self.num_servers, device=critic_inputs.device,
+                dtype=critic_inputs.dtype,
+            )
+            focal_device = critic_inputs.new_zeros(
+                (critic_inputs.shape[0], num_nodes, 1)
+            )
+            focal_device[:, self.agent_index] = 1.0
+            critic_inputs = torch.cat(
+                [critic_inputs, windows, server_identity, focal_device], dim=-1
+            )
         hidden_nodes = F.relu(self.input_mlp(critic_inputs))
-        graph_embeddings = self.gat(
-            hidden_nodes, topology.global_adjacency
-        )
-        graph_embedding = graph_embeddings.mean(dim=1)
+        if self.adaptation_version == 3:
+            # The collector only reads training state; it adds no cloud action.
+            collector = hidden_nodes[:, self.agent_index : self.agent_index + 1]
+            hidden_nodes = torch.cat([hidden_nodes, collector], dim=1)
+            adjacency = F.pad(topology.global_adjacency, (0, 1, 0, 1))
+            adjacency[:, -1, :-1] = True
+            graph_embedding = self.gat(hidden_nodes, adjacency)[:, -1]
+        else:
+            graph_embedding = self.gat(
+                hidden_nodes, topology.global_adjacency
+            ).mean(dim=1)
         return self.output_fc2(F.relu(self.output_fc1(graph_embedding)))
 
 
@@ -329,6 +410,7 @@ class GATMAAgent:
         epsilon_min: float = 0.01,
         exploration_fraction: float = 1.0,
         device: str = "cpu",
+        adaptation_version: int = 3,
     ) -> None:
         """Initialize independent online/target networks on CPU or CUDA."""
         del num_agents
@@ -337,6 +419,8 @@ class GATMAAgent:
             raise ValueError("state_dim is incompatible with num_servers")
         if not 0.0 < exploration_fraction <= 1.0:
             raise ValueError("exploration_fraction must be in (0, 1]")
+        if adaptation_version not in (2, 3):
+            raise ValueError("adaptation_version must be 2 or 3")
 
         self.action_dim = action_dim
         self.agent_index = agent_index
@@ -348,6 +432,7 @@ class GATMAAgent:
         self.epsilon = epsilon_init
         self.exploration_fraction = exploration_fraction
         self.device = resolve_torch_device(device)
+        self.adaptation_version = adaptation_version
         node_feature_dim = 9 + priority_width
 
         actor_kwargs = {
@@ -358,6 +443,7 @@ class GATMAAgent:
             "hidden_dim": hidden_dim,
             "embedding_dim": embedding_dim,
             "num_heads": num_heads,
+            "adaptation_version": adaptation_version,
         }
         critic_kwargs = {
             "node_feature_dim": node_feature_dim,
@@ -366,6 +452,8 @@ class GATMAAgent:
             "hidden_dim": hidden_dim,
             "embedding_dim": embedding_dim,
             "num_heads": num_heads,
+            "agent_index": agent_index,
+            "adaptation_version": adaptation_version,
         }
         self.actor = GATMAActor(**actor_kwargs).to(self.device)
         self.target_actor = GATMAActor(**actor_kwargs).to(self.device)

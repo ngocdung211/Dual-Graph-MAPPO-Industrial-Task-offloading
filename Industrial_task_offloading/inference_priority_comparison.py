@@ -257,6 +257,12 @@ def _agent_config(
     kwargs = dict(checkpoint.get("agent_kwargs", {}))
     if agent_class_name in {"GraphGATMAPPOAgent", "GATMAAgent"}:
         kwargs["device"] = device
+    if agent_class_name == "GATMAAgent":
+        # Historical constructors omitted the version and used the v2 heads.
+        kwargs.setdefault(
+            "adaptation_version",
+            checkpoint.get("adaptation", {}).get("version", 2),
+        )
     return {
         "class": AGENT_CLASSES[agent_class_name],
         "kwargs": kwargs,

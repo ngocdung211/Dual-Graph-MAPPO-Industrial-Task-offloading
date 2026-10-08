@@ -31,12 +31,13 @@ def _state():
     return state
 
 
-def _agents(device="cpu"):
+def _agents(device="cpu", adaptation_version=3):
     return [
         GATMAAgent(
             state_dim=18, action_dim=3, num_agents=2, num_servers=2,
             agent_index=index, hidden_dim=8, embedding_dim=8,
             num_heads=2, device=device,
+            adaptation_version=adaptation_version,
         )
         for index in range(2)
     ]
@@ -60,10 +61,67 @@ def test_actor_respects_local_connectivity():
     assert torch.isfinite(agent.actor(state)).all()
 
 
-def test_cached_topology_preserves_outputs_and_gradients():
+def test_actor_server_scores_follow_server_permutation():
+    """Moving a server observation must move its corresponding action score."""
+    torch.manual_seed(75)
+    actor = _agents()[0].actor
+    state = _state()
+    original = actor(state)
+    permuted = state.clone()
+    for offset in (10, 12, 14, 16):
+        permuted[:, offset : offset + 2] = state[:, offset : offset + 2].flip(-1)
+
+    torch.testing.assert_close(actor(permuted), original[[0, 2, 1]])
+    assert not torch.allclose(original[1], original[2])
+
+
+def test_actor_uses_window_timing_without_masking_actions():
+    """A shorter connected window changes policy and receives gradients."""
+    torch.manual_seed(75)
+    actor = _agents()[0].actor
+    state = _state().requires_grad_()
+    original = actor(state)
+    shorter = state.detach().clone()
+    shorter[0, 16] = 0.05
+    assert not torch.allclose(actor(shorter), original)
+    original[1].backward()
+    assert state.grad[0, 16].abs() > 0
+
+    disconnected = state.detach().clone()
+    disconnected[0, 16:18] = 0.0
+    probabilities = actor(disconnected)
+    assert torch.isfinite(probabilities).all()
+    assert (probabilities > 0).all()
+
+
+def test_critic_uses_global_attention_and_focal_device_context():
+    """Collector sees all physical nodes and distinguishes the reward owner."""
+    torch.manual_seed(75)
+    critic = _agents()[0].critic
+    state = _state().requires_grad_()
+    actions = F.one_hot(torch.tensor([[0, 1]]), num_classes=3).float()
+    collector_inputs = []
+    handle = critic.gat.register_forward_pre_hook(
+        lambda module, inputs: collector_inputs.append(inputs)
+    )
+    original = critic(state, actions)
+    handle.remove()
+    hidden_nodes, adjacency = collector_inputs[0]
+    assert hidden_nodes.shape[1] == 5  # Two devices, two servers, one collector.
+    assert adjacency[0, -1, :-1].all()
+    assert not adjacency[0, -1, -1]
+
+    permuted = critic(state.flip(0), actions.flip(1))
+    assert not torch.allclose(permuted, original)
+    original.sum().backward()
+    assert state.grad[0, 16].abs() > 0
+
+
+@pytest.mark.parametrize("adaptation_version", [2, 3])
+def test_cached_topology_preserves_outputs_and_gradients(adaptation_version):
     """Reusing topology tensors must preserve GATMA math exactly."""
     torch.manual_seed(75)
-    agent = _agents()[0]
+    agent = _agents(adaptation_version=adaptation_version)[0]
     states = torch.stack([_state(), _state()])
     action_indices = torch.tensor([[0, 1], [2, 0]])
     joint_actions = F.one_hot(action_indices, num_classes=3).float()
@@ -228,8 +286,9 @@ def test_terminal_target_ignores_next_q(monkeypatch):
     torch.testing.assert_close(targets[1], torch.full((2, 1), 0.7))
 
 
+@pytest.mark.parametrize("adaptation_version", [2, 3])
 def test_runner_uses_sixteen_episode_updates_and_continuous_replay(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, adaptation_version
 ):
     """GATMA must update 16 times after collecting continuous transitions."""
     monkeypatch.setitem(runner.PAPER_PARAMS["confirmed"], "time_slots", 2)
@@ -248,6 +307,7 @@ def test_runner_uses_sixteen_episode_updates_and_continuous_replay(
     config = runner.build_algorithm_configs(gatma_device="cpu")["GATMA-Adapted"]
     config["batch_size"] = 2
     config["kwargs"].update(hidden_dim=8, embedding_dim=8, num_heads=2)
+    config["kwargs"]["adaptation_version"] = adaptation_version
     args = dict(
         devices=devices, servers=servers, network_env=network, data_loader=loader,
         priority_model=None, num_episodes=1, experiment_seed=75,
@@ -264,11 +324,23 @@ def test_runner_uses_sixteen_episode_updates_and_continuous_replay(
         np.testing.assert_array_equal(previous[3], following[0])
     assert history["maddpg_update_rounds"] == [16.0]
     assert checkpoint["adaptation"]["time_slots"] == 2
+    assert checkpoint["adaptation"]["version"] == adaptation_version
     assert checkpoint["adaptation"]["replay_updates_per_episode"] == 16
     assert "updates_per_slot" not in checkpoint["adaptation"]
+    if adaptation_version == 2:
+        # Real historical checkpoints omit the constructor version entirely.
+        checkpoint["agent_kwargs"].pop("adaptation_version")
     torch.save(checkpoint, tmp_path / "GATMA-Adapted_checkpoint.pt")
     loaded = _load_checkpoints(tmp_path, ["GATMA-Adapted"])["GATMA-Adapted"]
-    evaluation = runner.evaluate_algorithm_checkpoint(_agent_config(loaded), loaded, **args)
+    restored_config = _agent_config(loaded)
+    assert restored_config["kwargs"]["adaptation_version"] == adaptation_version
+    current_config = runner.build_algorithm_configs(gatma_device="cpu")[
+        "GATMA-Adapted"
+    ]
+    current_config["kwargs"].update(hidden_dim=8, embedding_dim=8, num_heads=2)
+    evaluation = runner.evaluate_algorithm_checkpoint(
+        current_config, loaded, **args
+    )
     assert len(evaluation["reward"]) == 1
     assert all(np.isfinite(values).all() for values in evaluation.values())
 
@@ -292,6 +364,7 @@ def test_gatma_model_settings_come_from_config(monkeypatch) -> None:
     assert config["kwargs"]["critic_lr"] == provisional["gatma_critic_lr"]
     assert config["kwargs"]["gamma"] == provisional["gatma_gamma"]
     assert config["kwargs"]["device"] == "cpu"
+    assert config["kwargs"]["adaptation_version"] == 3
 
 
 def test_legacy_name_selects_one_adapted_baseline():

@@ -1246,11 +1246,20 @@ def train_algorithm(
     if uses_gatma and checkpoint is not None:
         checkpoint["adaptation"] = {
             "name": "GATMA-Adapted",
-            "version": 2,
+            "version": agents[0].adaptation_version,
             "paper_doi": "10.1109/TCCN.2026.3683874",
             "agent_role": "device",
             "graph": "connected_device_server_with_self_edges",
-            "critic_readout": "mean_pool",
+            "critic_readout": (
+                "focal_context_attention_collector"
+                if agents[0].adaptation_version == 3 else "mean_pool"
+            ),
+            "actor_readout": (
+                "aligned_shared_server_scores_with_link_windows"
+                if agents[0].adaptation_version == 3
+                else "pooled_fixed_action_logits"
+            ),
+            "link_window_features": agents[0].adaptation_version == 3,
             "actor_gradient": "straight_through_argmax_other_replay_actions",
             "action_mask": False,
             "replay_updates_per_episode": gatma_replay_updates_per_episode,

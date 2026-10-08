@@ -744,26 +744,44 @@ Critic: joint state [1380] → MLP 1380→64→64→1           (one team value)
 
 ### GATMA-Adapted comparison baseline
 
-`GATMA-Adapted` is adapted to the same DITEN task while preserving its paper-level
-learning design. Devices remain the 30 agents, and the action remains one of 10
-offloading locations; channel, transmit-power, and cloud actions are omitted.
+`GATMA-Adapted` defaults to **v3 for new runs (2026-10-08)**. Devices remain the
+30 agents and actions remain ten offloading locations. The actor preserves
+pair-window timing and server/action correspondence; the critic uses central
+attention with focal-device context. Channel, transmit-power, and physical-cloud
+actions are omitted. These are explicit DITEN adaptations of the learning design,
+not a reproduction of the source paper's experiments. Historical v2 checkpoint
+inference retains its original mean readout and parameter shapes.
 
 ```text
 Actor per device:
-  local device-server graph → MLP 14→64
+  local device-server graph + own pair windows → MLP 16→64
   → one 4-head GAT (concatenated width 64)
-  → MLP 64→64→10 → epsilon-greedy action
+  → local head 64→64→1
+  + shared server scorer 131→64→1, ordered by server action ID
+  → softmax over 10 logits → epsilon-greedy action
 
 Critic per device:
-  global nodes + joint one-hot actions
-  → MLP 24→64 → one 4-head GAT → global mean pool
+  global nodes + joint one-hot actions + all pair windows
+  + server identities + focal-device marker
+  → MLP 52→64 → append training-only focal-context collector
+  → one 4-head GAT, collector attends all 39 physical nodes
   → MLP 64→64→1 → Q_i(s,A)
 ```
 
 > **Code locations:**
 >
-> - Four-head GAT, actor, and Q-critic: [baselines/gatma.py:129–308](../baselines/gatma.py#L129-L308).
-> - Epsilon-greedy actions: [baselines/gatma.py:385–404](../baselines/gatma.py#L385-L404).
+> - Retained pair windows and topology batches: [baselines/gatma.py:27](../baselines/gatma.py#L27).
+> - Shared server scoring and window inputs: [baselines/gatma.py:230](../baselines/gatma.py#L230).
+> - Focal context and attention collector: [baselines/gatma.py:327](../baselines/gatma.py#L327).
+> - Epsilon-greedy actions: [baselines/gatma.py:473](../baselines/gatma.py#L473).
+
+With batch size B, cached base nodes are `[B,39,14]`, windows `[B,30,9,2]`,
+actor-local inputs `[B,10,16]`, and critic inputs `[B,39,52]`. The critic input
+width is base 14 + action 10 + windows 18 + server identity 9 + focal marker 1.
+Its GAT sees `[B,40,64]`, including the collector, and reads only that collector's
+`[B,64]` output. The collector is a training readout, not another server action.
+Disconnected candidate resource embeddings are zeroed; output actions remain
+unmasked. V3 can learn from window timing without gaining an action mask.
 
 GATMA uses a replay capacity of 100,000, batch size 128, actor/critic learning
 rates `1e-4/1e-5`, `gamma=0.95`, `tau=0.01`, and epsilon decay `0.99→0.01`.
@@ -774,9 +792,9 @@ device owns separate online and target networks.
 
 > **Code locations:**
 >
-> - GATMA replay/learning configuration: [run_comparision.py:663–680](../run_comparision.py#L663-L680).
-> - Replay-update rounds: [run_comparision.py:2080–2087](../run_comparision.py#L2080-L2087).
-> - Online/target networks and epsilon decay: [baselines/gatma.py:370–416](../baselines/gatma.py#L370-L416).
+> - Version and learning configuration: [utils/comparison/algorithm_config.py:118](../utils/comparison/algorithm_config.py#L118).
+> - Replay-update rounds: [run_comparision.py:1053](../run_comparision.py#L1053).
+> - Online/target networks and epsilon decay: [baselines/gatma.py:395](../baselines/gatma.py#L395).
 
 Topology preprocessing is shared within each decision/update without changing
 the network equations. One joint action collection builds the node features,
@@ -787,8 +805,8 @@ forwards. No cache survives a new observation or an optimizer update.
 
 > **Code locations:**
 >
-> - Immutable topology batch and preprocessing: [baselines/gatma.py:15–126](../baselines/gatma.py#L15-L126).
-> - Shared state/next-state topology batches: [utils/gatma_training.py:27–106](../utils/gatma_training.py#L27-L106).
+> - Immutable topology batch and preprocessing: [baselines/gatma.py:16](../baselines/gatma.py#L16).
+> - Shared state/next-state topology batches: [utils/training/gatma_training.py:27](../utils/training/gatma_training.py#L27).
 
 The runner accepts `--gatma-device auto|cpu|cuda|cuda:<index>`; `auto` selects
 CUDA when available. Replay remains on CPU and sampled batches move to the
@@ -800,21 +818,35 @@ the next slot's real task observation before entering replay.
 
 > **Code locations:**
 >
-> - CPU replay transfer and straight-through actor update: [utils/gatma_training.py:27–101](../utils/gatma_training.py#L27-L101).
+> - CPU replay transfer and straight-through actor update: [utils/training/gatma_training.py:27](../utils/training/gatma_training.py#L27).
 > - CUDA/CPU selection: [utils/gpu_readiness.py:10–51](../utils/gpu_readiness.py#L10-L51).
-> - Slot-boundary transition handling: [run_comparision.py:1830–1949](../run_comparision.py#L1830-L1949).
+> - Slot-boundary transition handling: [run_comparision.py:803](../run_comparision.py#L803).
 
-Unlike the paper's cloud-node attention readout, this adaptation uses global
-mean pooling; it also omits channel/power control and continuous link-window
-features. These distinctions and the shared evaluation protocol are documented
-in [GATMA-Adapted](gatma_adapted.md). The inference comparison script accepts
+V2 used global mean pooling and omitted continuous link-window features; its
+limitations are documented in the [v2 audit](gatma_implementation_audit_2026-10-08.md).
+V3 restores an attention readout pattern using a focal-context collector over
+device and resource nodes. This collector and the candidate scorer remain DITEN
+adaptations, described in [GATMA-Adapted](gatma_adapted.md).
+The inference comparison script accepts
 `--algorithms GATMA-Adapted` and `--device cpu` for CUDA-to-CPU evaluation.
 
 > **Code locations:**
 >
-> - Topology inputs: [baselines/gatma.py:26–71](../baselines/gatma.py#L26-L71).
-> - Global mean pooling: [baselines/gatma.py:303–308](../baselines/gatma.py#L303-L308).
-> - Inference CLI: [inference_priority_comparison.py:63–128](../inference_priority_comparison.py#L63-L128).
+> - Checkpoint adaptation metadata: [run_comparision.py:1246](../run_comparision.py#L1246).
+> - Saved-version inference: [inference_priority_comparison.py:260](../inference_priority_comparison.py#L260).
+> - Saved-version evaluation: [utils/comparison/evaluation.py:81](../utils/comparison/evaluation.py#L81).
+
+**Verified on CPU:** focused GATMA tests (14 passed, one CUDA skip), server/action
+permutation correspondence, window response/gradients, collector/focal context,
+v2/v3 cache equivalence and round trips. A real 352-image, 30-device/9-server
+smoke completed three 100-slot training episodes with 16 updates each, reloaded
+v3 for held-out inference, and reproduced every historical v2 audit metric.
+The [smoke manifest](../experiments/gatma_v3/smoke_manifest.json) owns settings,
+metrics, source/checkpoint hashes and uncommitted-code provenance. Broader runner
+checks passed 51 tests with one CUDA skip; two existing Optuna warmup-choice
+failures were reproduced from HEAD and remain outside this implementation.
+**Planned:** full multi-seed training and readout/input ablations. This smoke does
+not establish long-run convergence or superiority.
 
 ## 6. Parameter and gradient ownership
 
@@ -827,8 +859,10 @@ in [GATMA-Adapted](gatma_adapted.md). The inference comparison script accepts
 | warmup head | 12,546 | auxiliary warmup only |
 | lightweight Topology-GAT encoder | 1,280 | auxiliary warmup and MAPPO |
 | lightweight shared actor | 21,058 | MAPPO actor loss |
-| GATMA actor ×30 | 299,820 | deterministic policy gradient |
-| GATMA critic ×30 | 301,470 | TD Q-loss |
+| GATMA v3 actor ×30 | 541,500 | deterministic policy gradient |
+| GATMA v3 critic ×30 | 355,230 | TD Q-loss |
+| historical GATMA v2 actor ×30 | 299,820 | deterministic policy gradient |
+| historical GATMA v2 critic ×30 | 301,470 | TD Q-loss |
 
 ```text
 MAPPO-optimized parameters       = 154,755
@@ -843,7 +877,7 @@ Lightweight deployment parameters = 22,338 (encoder + actor)
 > - Topology parameter projections: [models/topology_gat.py:21–23](../models/topology_gat.py#L21-L23).
 > - Standard/lightweight layer composition: [models/topology_gat.py:490–503](../models/topology_gat.py#L490-L503).
 > - Actor/critic/warmup parameter layers: [models/graph_gat_heads.py:26–103](../models/graph_gat_heads.py#L26-L103).
-> - GATMA actor/critic layers: [baselines/gatma.py:190–274](../baselines/gatma.py#L190-L274).
+> - GATMA v2/v3 actor/critic layers: [baselines/gatma.py:194](../baselines/gatma.py#L194).
 > - Unique parameter counting: [benchmarks/benchmark_model_compute.py:39–42](../benchmarks/benchmark_model_compute.py#L39-L42).
 > - Deployment and active parameter totals: [benchmarks/benchmark_model_compute.py:320–429](../benchmarks/benchmark_model_compute.py#L320-L429).
 

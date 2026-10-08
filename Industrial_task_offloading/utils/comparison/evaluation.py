@@ -78,6 +78,19 @@ def evaluate_algorithm_checkpoint(
     uses_graph_gat_mappo = agent_class is GraphGATMAPPOAgent
     uses_gatma = agent_class is GATMAAgent
     uses_shared_mappo = agent_class is SharedMAPPOAgent
+    if uses_gatma:
+        # A current training config must still load the saved architecture.
+        saved_version = checkpoint.get("adaptation", {}).get("version", 2)
+        saved_kwargs = checkpoint.get("agent_kwargs", {})
+        agent_config = {
+            **agent_config,
+            "kwargs": {
+                **agent_config.get("kwargs", {}),
+                "adaptation_version": saved_kwargs.get(
+                    "adaptation_version", saved_version
+                ),
+            },
+        }
     agents: List[object] = []
     if uses_graph_gat_mappo:
         graph_dims = checkpoint.get("graph_dims", {})

@@ -1,4 +1,4 @@
-# GATMA-Adapted comparison baseline
+# GATMA-Adapted v3 comparison baseline
 
 ## Scope and application structure
 
@@ -21,17 +21,23 @@ and target copies. These roles are separate from the three application layers
 and from neural-network layers. Frozen Task-GAT, when enabled, supplies the
 same priority order to all algorithms; it is not part of GATMA's encoder.
 
+**Current default, 2026-10-08:** new runs use `adaptation_version=3`.
+Version 2 remains available to load historical checkpoints, whose constructor
+settings did not include a version. The [v2 audit](gatma_implementation_audit_2026-10-08.md)
+records the motivating observations; it is historical evidence, not a v3 result.
+
 ## Paper mapping and deliberate differences
 
 | Aspect | Paper | Adaptation |
 |---|---|---|
 | Agent / node | Edge-server agents, edge/cloud nodes (18–20) | Device agents; device/server nodes |
 | Actor neighborhood | First-hop connected servers (25–28) | Own device + connected edge servers + self edges |
-| Node features | Associated terminal tasks and server resources | DITEN task, priority, compute and wait features; width 14 for five subtasks |
-| Edge representation | Neighbor membership in attention | Boolean connection from `window_end > window_start`; no window-length edge feature |
+| Node features | Associated terminal tasks and server resources | Base width 14; actor appends its own pair's window start/end to each server node |
+| Edge representation | Neighbor membership in attention | Boolean attention adjacency plus retained pair windows `[B,D,S,2]` |
 | Encoder | Input MLP, multi-head GAT, output MLP | Same pattern, separate Actor/Critic weights per device |
 | Actions (21) | Location, subchannel, transmit power | Local execution or one edge server; no cloud/channel/power decisions |
-| Critic (29) | Attention aggregation toward central cloud node | One bipartite GAT layer followed by mean pooling over all nodes |
+| Actor output | MLP decisions from local GAT features | Local head plus shared per-server scorer; score j maps to action j+1 |
+| Critic (29) | Attention aggregation toward central cloud node | One GAT attention readout into a training-only collector with focal-device context; attends device and resource nodes |
 | Objective (22) | Deadline minus task completion latency | Existing DITEN reward shared with comparison methods |
 | Actor gradient (30) | Deterministic policy gradient | Straight-through argmax with softmax gradient; other actions from replay |
 | Targets (31–36) | Target Actor/Critic, TD loss, Polyak updates | Retained; terminal bootstrap masked; targets updated after each replay round |
@@ -39,12 +45,55 @@ same priority order to all algorithms; it is not part of GATMA's encoder.
 The existing defaults are retained: widths 64/64, four concatenated heads,
 actor/critic learning rates 1e-4/1e-5, gamma 0.95, tau 0.01, batch 128,
 replay capacity 100,000 and episode-progress epsilon 0.99 toward 0.01.
-These are the current adaptation settings; they are not certified as an exact
-transcription of every entry in the PDF's graphical Table IV. The linear
+The audit verified these learning constants against the graphical Table IV.
+The paper's full experiment is not reproduced: its 3000 episodes and 200 steps
+differ from the DITEN comparison budget and decision granularity. The linear
 epsilon schedule and 16 replay-update rounds after each episode are explicit
 adaptation choices. For a finite run, the last episode starts just before the
 schedule's endpoint because progress uses the number of already completed
 episodes.
+
+## V3 representation and checkpoint contract
+
+For 30 devices, nine servers, five subtasks, and batch size B:
+
+| Tensor or head | Shape / input width |
+|---|---|
+| Flat joint state | `[B,30,46]` |
+| Base node features | `[B,39,14]` |
+| Device-server windows | `[B,30,9,2]`, slot-relative start/end from the environment |
+| Actor local node features | `[B,10,16]` |
+| Actor local logit | `64 -> 64 -> 1` |
+| Shared server scorer | `[device_embedding, server_embedding, start, end, connected]`, `131 -> 64 -> 1` |
+| Actor probabilities | `[B,10]`, local action first, then server order |
+| Critic physical-node inputs | `[B,39,52]`: base 14 + action 10 + windows 18 + server identity 9 + focal marker 1 |
+| Critic GAT input / readout | `[B,40,64] -> collector embedding [B,64] -> Q_i [B,1]` |
+
+The [actor](../baselines/gatma.py#L230) concatenates only its own device's
+windows to local server features. A shared scorer preserves server/action
+correspondence under a joint permutation of all server observation blocks.
+Disconnected server embeddings are zeroed before scoring so unseen resource
+values cannot influence decisions. Every categorical action remains available;
+neither the score nor exploration applies an action mask.
+
+The [critic](../baselines/gatma.py#L327) appends all pair windows, server-slot
+identities, and a marker for the device whose reward it predicts. Its additional
+collector copies that device's projected context and attends all physical
+device/resource nodes, excluding itself. This restores a central attention
+readout pattern; the collector is not a physical cloud server and adds no
+execution action. Attending device and resource nodes, focal context, pair
+features, and the categorical scorer remain explicit DITEN adaptations.
+
+The shared GAT width stays 64 with four heads. Each v3 actor has 18,050
+parameters and each critic 11,841, versus v2's 9,994/10,049; therefore an equal
+sample budget is not an equal parameter or runtime budget.
+
+[New configurations](../utils/comparison/algorithm_config.py#L126) record
+version 3 in constructor kwargs. [Checkpoint metadata](../run_comparision.py#L1246)
+records the readout and window contracts. [Inference configuration](../inference_priority_comparison.py#L260)
+and [evaluation](../utils/comparison/evaluation.py#L81) resolve the saved version,
+defaulting missing historical version fields to v2. V2 preserves the old
+parameter shapes and mean readout; its weights are not converted into v3.
 
 ## Training and runtime behavior
 
@@ -119,12 +168,35 @@ remains available when `--algorithms` is omitted.
 
 ## Verification scope
 
-`tests/test_gatma.py` checks local attention isolation, cached/uncached output
+`tests/test_gatma.py` checks server/action permutation correspondence, window
+response and gradients, unmasked disconnected actions, collector reach and
+focal-device context, local attention isolation, cached/uncached output
 and gradient equivalence, topology build counts, discrete Critic inputs,
 actor/critic encoder gradients, frozen targets, Polyak updates, terminal
 masking, slot-boundary replay continuity, checkpoint round trips and CPU/CUDA
-operation. A real-data 100-slot CUDA smoke run verifies the runner and Drive
-artifacts. Neither check establishes convergence or superiority.
+operation. Historical CUDA verification below applies to v2. Neither basic
+mechanics nor a short smoke establishes convergence or superiority.
+
+### V3 verification, 2026-10-08
+
+- Focused GATMA tests: 14 passed, one CUDA test skipped on this CPU host.
+- Broader runner/tracking/artifact checks: 51 passed, one CUDA skip, two existing
+  Optuna failures. Both concern default Graph-GAT warmup 15 outside the search
+  choices `[5,10,20]`; the same failure was reproduced from the HEAD tuner and
+  unchanged `paper_config.py`. Those unrelated defaults were not changed.
+- Real-data CPU smoke: modular 30-device/9-server topology, training seed 192,
+  three 100-slot episodes, 500 joint transitions and 16 replay rounds each.
+  All 30 actors and critics have 48 Adam steps and finite online/target weights.
+- Saved v3 checkpoint was reloaded and completed greedy held-out inference on
+  task seed 1192, with finite reward/delay/energy. Training and evaluation used
+  the Drive snapshot of 352 input images, not synthetic fallback.
+- A historical seed192 v2 checkpoint reproduced every audit metric at task seed
+  1192 within absolute tolerance `1e-7` using the new version-aware evaluator.
+- The [smoke manifest](../experiments/gatma_v3/smoke_manifest.json) owns settings,
+  source hashes, checkpoint hash/path, training and inference metrics, and the
+  uncommitted-code provenance. Three episodes are integration evidence only.
+- Planned: matched full training over multiple seeds and separate readout/input
+  ablations. V3 convergence and performance superiority remain unverified.
 
 ### Verified run before the fixed-budget revision, 2026-09-23
 
