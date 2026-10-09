@@ -21,7 +21,7 @@ from baselines.shared_mappo import SharedMAPPOAgent, select_shared_joint_actions
 # Environment & Models
 from environment.network_env import NetworkEnvironment
 from environment.system_model import EdgeServer, IndustrialDevice
-from environment.diten_env import DITENEnv
+from environment.diten_env import DITENEnv, REQUEST_METRIC_FIELDS
 from dataset.data_loader import KolektorSDDLoader
 from models.replay_buffer import MultiAgentReplayBuffer
 from models.maddpg import EpsilonATNMADDPGAgent
@@ -32,6 +32,7 @@ from utils.comparison.algorithm_config import (
     select_algorithm_configs,
 )
 from utils.comparison.diagnostics import (
+    EPISODE_DIAGNOSTIC_FIELDS,
     _format_diagnostic_summary,
     _should_print_diagnostics,
     _summarize_step_metrics,
@@ -88,6 +89,16 @@ def parse_args() -> argparse.Namespace:
     """Parse comparison-runner CLI arguments."""
     provisional = PAPER_PARAMS["provisional_table2_needed"]
     parser = argparse.ArgumentParser(description="Run DITEN comparison experiments.")
+    parser.add_argument(
+        "--request-overhead", action="store_true",
+        default=bool(provisional["enable_request_overhead"]),
+        help="Opt into request/ACK/rejection/timeout before task upload.",
+    )
+    parser.add_argument(
+        "--request-timeout-s", type=float,
+        default=float(provisional["request_timeout_s"]),
+        help="Maximum response wait after request transmission (seconds).",
+    )
     parser.add_argument(
         "--topology-scenario",
         default=str(provisional["topology_scenario"]),
@@ -500,6 +511,7 @@ def train_algorithm(
     ] = None,
     show_progress: bool = True,
     replay_updates_per_episode: int = 1,
+    request_overhead_config: Optional[Dict[str, object]] = None,
 ) -> Tuple[Dict[str, List[float]], Optional[Dict[str, Any]]]:
     """Train one algorithm configuration and return metrics and checkpoint.
 
@@ -523,6 +535,8 @@ def train_algorithm(
         show_progress: Whether to print progress and diagnostic summaries.
         replay_updates_per_episode: Gradient rounds per episode for off-policy
             replay agents such as e-ATN-MADDPG.
+        request_overhead_config: Optional request admission settings. None
+            keeps the legacy environment behavior.
 
     Returns:
         Tuple of metric history and optional trainable model checkpoint payload.
@@ -563,6 +577,7 @@ def train_algorithm(
             if topology_scenario is not None
             else (100.0, 100.0)
         ),
+        **(request_overhead_config or {}),
     )
     # State/Action dimensions
     STATE_DIM = env.get_state_dim()
@@ -679,6 +694,7 @@ def train_algorithm(
     
     # Track metrics
     history = {
+        **{name: [] for name in REQUEST_METRIC_FIELDS},
         "reward": [],
         "delay": [],
         "energy": [],
@@ -744,6 +760,7 @@ def train_algorithm(
         env.reset_episode()
         count_local = 0
         count_edge = 0
+        episode_request_metrics = {name: 0.0 for name in REQUEST_METRIC_FIELDS}
         slot_rewards = []
         slot_delays = []
         slot_energies = []
@@ -859,6 +876,8 @@ def train_algorithm(
                 episode_env_step_time += time.perf_counter() - env_step_start
                 metric_summary_start = time.perf_counter()
                 metric_summary = _summarize_step_metrics(env.last_step_metrics)
+                for name in REQUEST_METRIC_FIELDS:
+                    episode_request_metrics[name] += metric_summary[name]
                 episode_metric_summary_time += (
                     time.perf_counter() - metric_summary_start
                 )
@@ -1014,6 +1033,12 @@ def train_algorithm(
         history["requested_edge_count"].append(episode_requested_edge_count)
         history["resolved_local_count"].append(episode_resolved_local_count)
         history["resolved_edge_count"].append(episode_resolved_edge_count)
+        for name in REQUEST_METRIC_FIELDS:
+            # Energy/duration use the same device-task unit as main metrics.
+            value = episode_request_metrics[name]
+            if name in REQUEST_METRIC_FIELDS[:3]:
+                value /= device_count * max(len(slot_rewards), 1)
+            history[name].append(float(value))
 
         if uses_graph_gat_mappo:
             episode_graph_update_time = _update_graph_gat_mappo_from_rollout(
@@ -1242,6 +1267,7 @@ def train_algorithm(
             key: float(provisional[key])
             for key in ("lambda1", "lambda2", "lambda3", "lambda4", "lambda5", "p_out_value")
         },
+        request_overhead_config=env.get_request_overhead_config(),
     )
     if uses_gatma and checkpoint is not None:
         checkpoint["adaptation"] = {
@@ -1277,6 +1303,16 @@ if __name__ == "__main__":
     args = parse_args()
     confirmed = PAPER_PARAMS["confirmed"]
     provisional = PAPER_PARAMS["provisional_table2_needed"]
+    request_overhead_config = {
+        "enable_request_overhead": args.request_overhead,
+        "request_timeout_s": args.request_timeout_s,
+        **{
+            name: float(provisional[name]) for name in (
+                "request_duration_s", "response_duration_s",
+                "request_listen_power_w",
+            )
+        },
+    }
     reward_weights = {
         key: float(provisional[key])
         for key in ("lambda1", "lambda2", "lambda3", "lambda4", "lambda5", "p_out_value")
@@ -1404,6 +1440,7 @@ if __name__ == "__main__":
 
     # 3. Run Comparisons
     results = {"reward": {}, "delay": {}, "energy": {}}
+    results.update({name: {} for name in EPISODE_DIAGNOSTIC_FIELDS})
     priority_results = {"reward": {}, "delay": {}, "energy": {}}
     FULL_EPISODES = (
         int(args.episodes)
@@ -1475,6 +1512,7 @@ if __name__ == "__main__":
                 "agent_class": config["class"].__name__,
                 "agent_kwargs": dict(config.get("kwargs", {})),
                 "reward_weights": reward_weights,
+                "request_overhead_config": request_overhead_config,
                 "use_gae": args.use_gae,
                 "num_minibatches": args.num_minibatches,
                 "maddpg_updates_per_episode": args.maddpg_updates_per_episode,
@@ -1512,12 +1550,15 @@ if __name__ == "__main__":
                 fixed_priority_order=fixed_priority_order,
                 experiment_seed=experiment_seed,
                 replay_updates_per_episode=args.maddpg_updates_per_episode,
+                request_overhead_config=request_overhead_config,
             )
         finally:
             experiment_tracker.finish()
         results["reward"][algo_name] = history["reward"]
         results["delay"][algo_name] = history["delay"]
         results["energy"][algo_name] = history["energy"]
+        for name in EPISODE_DIAGNOSTIC_FIELDS:
+            results[name][algo_name] = history[name]
         last_training_state_rows.append(
             build_last_training_state_line(
                 algo_name,
@@ -1530,6 +1571,7 @@ if __name__ == "__main__":
                 reward_weights=reward_weights,
                 maddpg_updates_per_episode=args.maddpg_updates_per_episode,
                 task_priority=args.task_priority,
+                request_overhead_config=request_overhead_config,
             )
         )
         if checkpoint is not None:

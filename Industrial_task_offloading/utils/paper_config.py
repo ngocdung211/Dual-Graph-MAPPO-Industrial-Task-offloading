@@ -46,6 +46,12 @@ PAPER_PARAMS: Dict[str, Dict[str, float]] = {
         "lambda4": 5.0,
         "lambda5": 1.0,
         "p_out_value": -1.5,
+        # Opt-in request admission assumptions, separate from old experiments.
+        "enable_request_overhead": False,
+        "request_duration_s": 0.001,
+        "response_duration_s": 0.001,
+        "request_timeout_s": 0.1,
+        "request_listen_power_w": 0.05,
         "local_estimation_error": 0.05,
         "edge_estimation_error": 0.05,
         "gcn_pretrain_epochs": 200,

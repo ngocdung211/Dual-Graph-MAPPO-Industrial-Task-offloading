@@ -80,6 +80,63 @@ def test_comparison_cli_defaults_to_strict_local_dataset(
     assert args.allow_dummy_data is False
     assert args.local_output_root == "plots"
     assert args.drive_artifact_root == ""
+    assert args.request_overhead is False
+    assert args.request_timeout_s == 0.1
+
+
+def test_request_cli_is_opt_in_and_timeout_is_configurable(monkeypatch):
+    monkeypatch.setattr(sys, "argv", [
+        "run_comparision.py", "--request-overhead",
+        "--request-timeout-s", "0.05",
+    ])
+    args = parse_args()
+    assert args.request_overhead is True
+    assert args.request_timeout_s == 0.05
+
+
+def test_request_config_and_diagnostics_are_exported(tmp_path):
+    import csv
+    import json
+    from types import SimpleNamespace
+    import torch
+    from environment.diten_env import REQUEST_METRIC_FIELDS
+    from utils.comparison.outputs import (
+        _write_episode_history_csv, build_last_training_state_line,
+        build_model_checkpoint,
+    )
+
+    settings = {
+        "enable_request_overhead": True, "request_duration_s": 0.001,
+        "response_duration_s": 0.001, "request_timeout_s": 0.1,
+        "request_listen_power_w": 0.05,
+    }
+    history = {
+        "reward": [1.0], "delay": [0.102], "energy": [0.0056],
+        "requested_edge_count": [1], "resolved_edge_count": [0],
+        "penalty_count": [1],
+        **{name: [0.0] for name in REQUEST_METRIC_FIELDS},
+    }
+    history["request_timeout_count"] = [1]
+    history["request_energy"] = [0.0005]
+    history["request_wait_energy"] = [0.005]
+    final = build_last_training_state_line(
+        "Test", history, 1, experiment_seed=190,
+        request_overhead_config=settings,
+    )
+    checkpoint = build_model_checkpoint(
+        "Test", [SimpleNamespace(actor=torch.nn.Linear(1, 1))], {}, history,
+        1, 1, 2, 1, 1, request_overhead_config=settings,
+    )
+    assert checkpoint["request_overhead_config"] == settings
+    path = tmp_path / "episode_history.csv"
+    _write_episode_history_csv(
+        str(path), {name: {"Test": values} for name, values in history.items()},
+        [final],
+    )
+    row, = list(csv.DictReader(path.open()))
+    assert json.loads(row["request_overhead_config"]) == settings
+    assert float(row["request_timeout_count"]) == 1
+    assert float(row["request_wait_energy"]) == pytest.approx(0.005)
 
 
 def test_dataset_provenance_is_flattened_for_run_records() -> None:

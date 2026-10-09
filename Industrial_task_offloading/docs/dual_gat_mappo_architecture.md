@@ -163,6 +163,60 @@ flowchart LR
     TEMP -->|rename after successful copy| RUNS["Drive runs directory"]
 ```
 
+### Subtask offloading count reporting (2026-10-09)
+
+**Implemented:** `utils/reporting/plot_offloading_counts.py` adds an output-only
+reporting path. It reads full W&B training histories, exports a count CSV, and
+can replot that CSV offline. It adds no model role and changes no environment,
+action, reward, or training setting. The existing W&B exporter owns history-key
+normalization and complete-episode validation; the new script owns count
+validation, final-window aggregation, and figures.
+
+Success means a resolved edge execution of one subtask; rejection means a
+penalty event with strict local fallback. Each row must satisfy
+`requested_edge_count = resolved_edge_count + penalty_count`. These metrics
+do not measure whole-DAG deadline success. Counts are averaged over the final
+window within each seed; rates use summed outcomes divided by summed requests
+within that window. The report then computes mean and sample SD across seed
+summaries. Zero-request rates are undefined, excluded from rate aggregation,
+and reported with the number of contributing seeds.
+
+Defaults are four comparison models, seeds 190/191/192, 1000 expected training
+episodes, final window 100, and trailing smoothing window 8 for count curves.
+`--models` also accepts `Shared Mask MAPPO`, displayed as **Mask MAPPO**, to
+extend the comparison with the masking-only ablation. Curve colors are keyed
+by model so all five models remain visible and keep stable colors.
+The CLI selects topology and source groups explicitly. A separate GATMA group
+can replace historical v2 data; GATMA rows must record adaptation version 3.
+Repeated complete runs require explicit `--run-ids`, rather than treating
+copies as additional independent seeds. Performance-only episode CSVs cannot
+provide missing counts and are rejected.
+
+Outputs include full history and per-seed/final-window CSVs, count curves,
+count/rate bar charts in PNG/PDF, and a source manifest with run configs,
+revision, and script hash. Computational-cost benchmarking remains separate.
+
+**Verified:** ten focused reporting checks, including five-model curve
+coverage; a 12-run API export for seeds
+190/191/192; agreement of all 12,000 reward/delay/energy rows with the saved
+comparison CSVs; 15,000 conserved subtask actions per episode; and offline CSV
+replotting. The generated figures were visually inspected. These checks verify
+reporting, not whole-task deadline satisfaction or statistical significance.
+The masking-only extension adds three matched Mask MAPPO runs; all 3,000
+additional performance rows agree with the saved ablation CSVs. Its
+[five-model report](../results/analysis/20261009_offloading_counts_with_mask_mappo/summary.md)
+preserves the original four model summaries and has visually verified figures.
+
+> **Code locations:**
+>
+> - W&B input and source selection: [utils/reporting/plot_offloading_counts.py:109](../utils/reporting/plot_offloading_counts.py#L109).
+> - Count validation and rates: [utils/reporting/plot_offloading_counts.py:213](../utils/reporting/plot_offloading_counts.py#L213).
+> - Seed/window aggregation: [utils/reporting/plot_offloading_counts.py:281](../utils/reporting/plot_offloading_counts.py#L281).
+> - Figure generation: [utils/reporting/plot_offloading_counts.py:349](../utils/reporting/plot_offloading_counts.py#L349).
+> - Existing history normalization: [utils/reporting/summarize_wandb_results.py:127](../utils/reporting/summarize_wandb_results.py#L127).
+> - Behavioral checks: [tests/test_offloading_count_reporting.py:32](../tests/test_offloading_count_reporting.py#L32).
+> - Full-history export and source configs: [source manifest](../results/analysis/20261009_offloading_counts/source_manifest.json).
+
 ## 1. Configuration and end-to-end flow
 
 | Symbol | Meaning | Value |
@@ -302,16 +356,18 @@ The environment then builds one 46-dimensional state per device:
 The state exposes DT estimates `f_hat`. Physical execution reconstructs
 `delta_f = f_hat - f` and `f = f_hat - delta_f`; estimated delay plus its
 deviation therefore equals `CPU/f`. Local computation energy uses
-`tau × CPU × f²`; edge-server computation energy is temporarily excluded, so
-offloaded execution contributes transmission energy only. Consecutive
+`tau × CPU × f²`; edge-server computation energy is temporarily excluded.
+With request overhead disabled, offloaded execution contributes transmission
+energy only; the opt-in control costs are described below. Consecutive
 subtasks placed on different edge servers are assumed to use a direct
 inter-server link with negligible transfer delay and energy; the simulator
 currently records both as zero. This is a modeling assumption, not a measured
 backhaul property. Current compute ranges are 0.8–1.2 GHz for devices and
 2.3–2.5 GHz for servers. Both device and server DT estimates use independent
 uniform relative errors in `[-5%, 5%]` at each time slot. Reward weights are
-`(lambda1,...,lambda5)=(5,5,5,5,1)`, the failed-offload penalty is `-1`,
-and sampled task CPU demand is scaled by `1.4`.
+`(lambda1,...,lambda5)=(5,5,5,5,1)`, the failed-offload penalty is `-1.5`,
+and sampled task CPU demand is scaled by `1.35`. Historical artifacts retain
+their recorded reward/workload settings.
 
 > **Code locations:**
 >
@@ -331,6 +387,82 @@ S₁ᵗ → A₁ᵗ → S₂ᵗ → ... → A₅ᵗ → S₆ᵗ
 >
 > - Environment step and slot completion: [environment/diten_env.py:268–304](../environment/diten_env.py#L268-L304).
 > - Subtask completion and index advancement: [environment/diten_env.py:572–602](../environment/diten_env.py#L572-L602).
+
+### Opt-in offload request admission (2026-10-09)
+
+**Implemented, disabled by default:** `run_comparision.py --request-overhead`
+enables request/response admission before task data movement. Application
+responsibilities remain environment physics, algorithms/models, and experiment
+reporting. The frozen task-priority role, actor/critic roles, state/action widths,
+graph features, and neural-network structures are unchanged. `main.py` remains
+on the default legacy environment path.
+
+| Parameter | Opt-in assumption |
+|---|---:|
+| Device request transmission duration | 0.001 s |
+| ACK or rejection response wait, after request transmission | 0.001 s |
+| No-response timeout, after request transmission | 0.1 s |
+| Device radio waiting/receiving power | 0.05 W |
+| Device transmit power | existing device parameter, normally 0.5 W |
+
+These are simulation assumptions, not measured DITEN protocol parameters.
+The [MADNet paper, Section II-A](https://www.cs.umd.edu/~srin/PDF/2013/madnet-conf.pdf#page=2)
+used 0.1 s for DHCP/TCP connection establishment measurements; it does not
+validate an edge task-admission timeout. `--request-timeout-s` overrides the
+timeout; the other assumptions are configured in `utils/paper_config.py`.
+
+A request is issued after its DAG predecessors finish, no earlier than the
+slot start. Independent DAG branches need not wait for each other's attempts.
+The recorded connection window must cover both request transmission and the
+response. A link absent at issue time, or one ending before response delivery,
+causes a full timeout, with no retry even if a future link becomes available.
+A positive-window action mask therefore does not guarantee admission at the
+later physical request time. If the response can arrive, the server checks the
+post-handshake data transfer, queue, and computation schedule. It acknowledges
+only work that finishes inside the window; otherwise it actively rejects.
+Only accepted jobs reserve server execution time.
+
+Accepted requests pay device transmit energy plus response listening energy.
+Active rejections pay those same control costs and the resolved local path;
+timeouts instead pay listening energy for the timeout duration and then the
+local path. No failed task upload or speculative server computation is charged.
+Fallback and its required transfers cannot begin before the attempt ends;
+CPU queue waiting may overlap the attempt. Energy is added once, while delay
+is still computed from physical finish times and DAG makespan increments.
+Both rejected and timed-out requests incur the existing reward penalty;
+`penalty_time` remains a legacy diagnostic and is not a timeout cost.
+
+New control costs cover device transmission and listening only. Existing
+data-transfer accounting, including server downlink transmission energy, and
+the exclusion of server computation energy are retained. Server ACK energy,
+packet contention, retries, and failures after upload starts are not modeled.
+The protocol is only supported with strict connection-window admission.
+
+The flow is CLI/config → environment admission/scheduling → per-step request
+diagnostics → normalized episode metrics → CSV/JSONL/W&B/checkpoint output.
+Counters satisfy `requested_edge = accepted + rejected + timed_out`,
+`resolved_edge = accepted`, and `penalty_count = rejected + timed_out` when
+enabled. Outcome counts are episode totals; request duration/transmit/listen
+energy are summed per episode and divided by device-task count, like the main
+delay/energy reporting unit. Request duration is not an additive DAG delay.
+
+Checkpoints save the complete effective `request_overhead_config`; evaluation
+restores it unless explicitly overridden. A checkpoint without that field
+uses the legacy environment, independent of any new-run opt-in setting.
+The [experiment checklist](experiment_plan.md#offload-request-admission-implementation-2026-10-09)
+records verification and deferred full training. Historical data is preserved.
+
+> **Code locations:**
+>
+> - Effective settings: [environment/diten_env.py:202](../environment/diten_env.py#L202).
+> - Request admission and server reservations: [environment/diten_env.py:586](../environment/diten_env.py#L586).
+> - Local fallback: [environment/diten_env.py:677](../environment/diten_env.py#L677).
+> - Energy accounting: [environment/diten_env.py:760](../environment/diten_env.py#L760).
+> - Post-admission data transfers: [environment/diten_env.py:850](../environment/diten_env.py#L850).
+> - CLI and timeout override: [run_comparision.py:92](../run_comparision.py#L92).
+> - Per-task normalization: [run_comparision.py:1036](../run_comparision.py#L1036).
+> - CSV/checkpoint publication: [utils/comparison/outputs.py:205](../utils/comparison/outputs.py#L205).
+> - Restored evaluation settings: [utils/comparison/evaluation.py:49](../utils/comparison/evaluation.py#L49).
 
 ## 3. State-to-graph transformation
 

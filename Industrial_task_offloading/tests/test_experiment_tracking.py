@@ -132,3 +132,19 @@ def test_episode_tracking_metrics_include_progress_and_graph_costs() -> None:
     assert metrics["runtime/connection_window_seconds"] == pytest.approx(0.2)
     assert metrics["runtime/connection_window_updates"] == pytest.approx(3.0)
     assert metrics["runtime/unaccounted_seconds"] == pytest.approx(0.2)
+
+
+def test_request_outcomes_and_energy_are_logged_separately():
+    history = _make_history()
+    history.update({
+        "request_accepted_count": [3], "request_rejected_count": [1],
+        "request_timeout_count": [2], "request_time": [0.002],
+        "request_energy": [0.0005], "request_wait_energy": [0.005],
+    })
+    metrics = _build_episode_tracking_metrics(history, 1, 1, 1, 1)
+    assert metrics["request/accepted_count"] == 3
+    assert metrics["request/rejected_count"] == 1
+    assert metrics["request/timeout_count"] == 2
+    assert metrics["request/seconds_per_device_task"] == 0.002
+    assert metrics["request/transmit_joules_per_device_task"] == 0.0005
+    assert metrics["request/listen_joules_per_device_task"] == 0.005

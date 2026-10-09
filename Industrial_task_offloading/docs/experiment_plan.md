@@ -1,9 +1,11 @@
 # Experiment Plan
 
-## Current paper setting (2026-09-24)
+## Current paper setting (2026-10-09)
 
-- Keep the current effective failed-offload penalty at `-1`
-  (`lambda5=1.0`, `p_out_value=-1.0`).
+- The effective failed-offload penalty is `-1.5`
+  (`lambda5=1.0`, `p_out_value=-1.5`); request admission does not change it.
+- The previous 2026-09-24 decision used `-1`. Preserve the actual settings in
+  historical run metadata rather than reinterpreting old runs as current ones.
 - Do not use `--hyperparameters-dir` or the old `unmasked_penalty_0_5`
   profile as a requirement for new paper experiments.
 - Keep older `penalty_0_5` results and command records labeled with their
@@ -68,6 +70,87 @@ graph edges (including disconnected pairs), actor/critic heads, topology, data,
 reward, action masking, and warmup are held fixed. Encoder semantics and actor
 pair features are described in the
 [architecture](dual_gat_mappo_architecture.md#separate-pyg-gat-mappo-experiment-2026-10-04).
+
+## Subtask offloading count report (2026-10-09)
+
+- [x] Add [plot_offloading_counts.py](../utils/reporting/plot_offloading_counts.py)
+  to export full training counts from W&B and plot CSV exports offline.
+- [x] Define successful edge executions and rejected requests at subtask level,
+  require count conservation and complete unique episodes, and keep GATMA v3
+  separate from historical v2. Counts use final-window seed means; rates use
+  summed outcomes/requests per seed, then across-seed mean/sample SD.
+- [x] Verify weighted denominators, final-window selection, undefined rates,
+  malformed counts, missing/duplicate seeds, v2 exclusion, and rejection of
+  performance-only CSVs in the focused reporting checks.
+- [x] Validate all 12,000 histories against the saved comparison performance
+  curves, verify 15,000 subtask actions per episode, and inspect the figures.
+  Results: [summary](../results/analysis/20261009_offloading_counts/summary.md).
+- [x] Extend reporting with the three matched Mask MAPPO runs and validate
+  their 3,000 performance rows against the saved ablation CSVs. Inspect all
+  five-model figures; the original four model summaries remain unchanged.
+  Results: [Mask MAPPO comparison](../results/analysis/20261009_offloading_counts_with_mask_mappo/summary.md).
+- [ ] Add count/rate results and metric definitions to the manuscript.
+
+The [architecture](dual_gat_mappo_architecture.md#subtask-offloading-count-reporting-2026-10-09)
+documents sources, outputs, and metric semantics. Computational cost remains a
+separate task; this report changes no training or energy-accounting behavior.
+
+## Optional manuscript figure: local actor and global critic (2026-10-09)
+
+**Deferred, not added to the manuscript:** explain local actor graphs and the
+global critic readout in text first. The architecture's
+[actor/critic tensor flow](dual_gat_mappo_architecture.md#4-actor-and-critic-tensor-paths)
+is the reference for a later publication figure.
+
+- [ ] Prepare a vector figure with local graph extraction, separate local/global
+  encoder outputs, and a shared encoder-parameter annotation. Show that the
+  critic flattens only global device embeddings, not all nodes or raw topology.
+- [ ] Include both edge directions at the encoder input, the actor's pair
+  features, and connectivity masking/renormalization. Fix clipped labels,
+  verify dimensions against code, and export PDF/PNG before manuscript insertion.
+
+## Offload request admission implementation (2026-10-09)
+
+**Implemented and opt-in; no full retraining performed.** The approved minimum
+model adds a 1 ms device request, 1 ms ACK/rejection wait, 100 ms no-response
+timeout, and 0.05 W device listening power. These are declared assumptions;
+the timeout is an adaptation of a connection-establishment example, not a
+measured DITEN parameter. Existing reward weights/penalty are unchanged.
+
+- [x] Implement accepted, actively rejected, and no-response timeout outcomes
+  before task upload. Reject/timeout still fall back to local with penalty.
+  Direct local actions pay no control costs. Account for signaling/listening
+  once, shift data/CPU readiness, and reserve server work only after admission.
+- [x] Add `--request-overhead` (default off) and `--request-timeout-s`, effective
+  checkpoint/W&B/JSONL/CSV settings, episode outcome counts, and control-energy
+  diagnostics. Restore saved protocol settings in evaluation; absent metadata
+  retains legacy behavior, with an explicit evaluation override available.
+- [x] Pass 67 focused tests covering environment, artifact publication,
+  tracking, reporting, digital twin, and topology-state behavior. Real-data
+  backward-compatibility trajectories match the HEAD environment exactly over
+  1,500 joint steps (100 slots each on small, medium, and modular scenarios).
+- [x] Run one 100-slot real-data episode for e-ATN-MADDPG, Shared MAPPO,
+  GATMA v3, Shared Mask MAPPO, and Graph-GAT Mask MAPPO, using 352 images,
+  seed 190, modular topology, CPU, GAE, four minibatches, and tracking disabled.
+  Check all 15,000 subtask decisions per model, finite checkpoint weights,
+  outcome conservation, and protocol metadata. All five checkpoints pass a
+  separate two-slot greedy evaluation and legacy-default/override equivalence.
+- [ ] Before matched full training, agree the budget/seeds and any timeout
+  sensitivity runs. Keep new results separate from previous training histories.
+- [ ] Update manuscript results only after an appropriate new comparison;
+  the integration smoke provides no trained-policy superiority evidence.
+
+The unmasked smoke policies exhibit queue backlog and approximately 11 s mean
+task delay, versus approximately 1.5 s for masked policies. These are initial
+one-episode smoke observations, not final performance. Request duration totals
+must not be added to existing delay curves: changed readiness/queue feedback
+requires a new rollout. Partial-upload failures, retries, server ACK energy,
+and radio contention remain outside this model.
+
+Settings, flows, and code references are in the
+[architecture](dual_gat_mappo_architecture.md#opt-in-offload-request-admission-2026-10-09).
+Smoke outputs are under `results/request_overhead_smoke`; their verification
+manifest records effective settings, source hashes, and validation scope.
 
 ## Historical `-0.5` plan (not the current paper setting)
 

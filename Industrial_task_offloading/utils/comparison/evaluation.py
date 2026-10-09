@@ -9,7 +9,7 @@ from baselines.gatma import GATMAAgent
 from baselines.graph_gat_mappo import GraphGATMAPPOAgent
 from baselines.shared_mappo import SharedMAPPOAgent
 from dataset.data_loader import KolektorSDDLoader
-from environment.diten_env import DITENEnv
+from environment.diten_env import DITENEnv, REQUEST_METRIC_FIELDS
 from environment.network_env import NetworkEnvironment
 from environment.system_model import EdgeServer, IndustrialDevice
 from utils.comparison.diagnostics import _summarize_step_metrics
@@ -36,16 +36,24 @@ def evaluate_algorithm_checkpoint(
     priority_mode: str = "gat",
     topology_scenario: Optional[TopologyScenario] = None,
     fixed_priority_order: Optional[List[int]] = None,
+    request_overhead_config: Optional[Dict[str, object]] = None,
 ) -> Dict[str, List[float]]:
     """Evaluate a trained policy with deterministic actions.
 
     Evaluation never performs optimizer updates, topology warmup, epsilon
     exploration, or stochastic policy sampling.
+    Request admission settings come from the checkpoint unless explicitly
+    overridden. Checkpoints without those settings use the legacy environment.
     """
     confirmed = PAPER_PARAMS["confirmed"]
     provisional = PAPER_PARAMS["provisional_table2_needed"]
     set_seed(experiment_seed)
     data_loader.reseed(experiment_seed)
+    # Historical checkpoints have no protocol settings and remain legacy.
+    request_settings = (
+        checkpoint.get("request_overhead_config", {})
+        if request_overhead_config is None else request_overhead_config
+    )
     env = DITENEnv(
         devices,
         servers,
@@ -71,6 +79,7 @@ def evaluate_algorithm_checkpoint(
             if topology_scenario is not None
             else (100.0, 100.0)
         ),
+        **request_settings,
     )
     state_dim = env.get_state_dim()
     action_dim = 1 + len(servers)
@@ -148,6 +157,7 @@ def evaluate_algorithm_checkpoint(
                 module.eval()
 
     history = {
+        **{name: [] for name in REQUEST_METRIC_FIELDS},
         "reward": [],
         "delay": [],
         "energy": [],
@@ -184,6 +194,7 @@ def evaluate_algorithm_checkpoint(
         resolved_edge_count = 0.0
         total_action_count = 0
         penalty_count = 0.0
+        request_metrics = {name: 0.0 for name in REQUEST_METRIC_FIELDS}
         for _ in range(time_slots):
             if episode_done:
                 break
@@ -251,6 +262,8 @@ def evaluate_algorithm_checkpoint(
                 summary = _summarize_step_metrics(env.last_step_metrics)
                 resolved_edge_count += summary["resolved_edge_count"]
                 penalty_count += summary["penalty_count"]
+                for name in REQUEST_METRIC_FIELDS:
+                    request_metrics[name] += summary[name]
                 slot_reward += sum(rewards) / len(devices)
                 slot_step_count += 1
                 current_joint_state = next_joint_state
@@ -275,4 +288,9 @@ def evaluate_algorithm_checkpoint(
             100.0 * resolved_edge_count / max(total_action_count, 1)
         )
         history["penalty_count"].append(float(penalty_count))
+        for name in REQUEST_METRIC_FIELDS:
+            value = request_metrics[name]
+            if name in REQUEST_METRIC_FIELDS[:3]:
+                value /= len(devices) * max(len(slot_rewards), 1)
+            history[name].append(float(value))
     return history

@@ -10,6 +10,12 @@ from environment.network_env import NetworkEnvironment
 from environment.system_model import EdgeServer, IndustrialDevice, Subtask, TaskDAG
 
 
+REQUEST_METRIC_FIELDS = (
+    "request_time", "request_energy", "request_wait_energy",
+    "request_accepted_count", "request_rejected_count", "request_timeout_count",
+)
+
+
 class DITENEnv:
     """Digital twin industrial task offloading environment."""
 
@@ -32,6 +38,11 @@ class DITENEnv:
         strict_connection_window: bool = True,
         route_rectangles: Optional[Sequence[Sequence[Sequence[float]]]] = None,
         world_size: Sequence[float] = (100.0, 100.0),
+        enable_request_overhead: bool = False,
+        request_duration_s: float = 0.001,
+        response_duration_s: float = 0.001,
+        request_timeout_s: float = 0.1,
+        request_listen_power_w: float = 0.05,
     ):
         """Initialize the DITEN environment.
 
@@ -53,6 +64,11 @@ class DITENEnv:
             strict_connection_window: Enforce strict coverage window constraint.
             route_rectangles: Optional custom rectangular mobility routes.
             world_size: Physical map width and height in meters.
+            enable_request_overhead: Model request/response before task upload.
+            request_duration_s: Device request transmission duration.
+            response_duration_s: Wait after transmission for a response.
+            request_timeout_s: Maximum wait after request transmission.
+            request_listen_power_w: Device radio waiting/receiving power.
         """
         self.devices: List[IndustrialDevice] = devices
         self.servers: List[EdgeServer] = servers
@@ -77,6 +93,27 @@ class DITENEnv:
         )
         self.digital_twin_snapshot: Optional[DigitalTwinSnapshot] = None
         self.strict_connection_window: bool = bool(strict_connection_window)
+        self.enable_request_overhead = bool(enable_request_overhead)
+        self.request_duration_s = float(request_duration_s)
+        self.response_duration_s = float(response_duration_s)
+        self.request_timeout_s = float(request_timeout_s)
+        self.request_listen_power_w = float(request_listen_power_w)
+        parameters = (
+            self.request_duration_s, self.response_duration_s,
+            self.request_timeout_s, self.request_listen_power_w,
+        )
+        if any(not np.isfinite(value) or value < 0 for value in parameters):
+            raise ValueError(
+                "Request parameters must be finite and nonnegative."
+            )
+        if self.response_duration_s > self.request_timeout_s:
+            raise ValueError(
+                "Response duration must not exceed request timeout."
+            )
+        if self.enable_request_overhead and not self.strict_connection_window:
+            raise ValueError(
+                "Request admission requires strict connection windows."
+            )
 
         self.device_accumulated_delay: Dict[int, float] = {}
         self.device_accumulated_energy: Dict[int, float] = {}
@@ -161,6 +198,16 @@ class DITENEnv:
     def get_runtime_metrics(self) -> Dict[str, float]:
         """Return a copy of cumulative environment wall-clock counters."""
         return dict(self.runtime_metrics)
+
+    def get_request_overhead_config(self) -> Dict[str, object]:
+        """Return effective settings for run/checkpoint provenance."""
+        return {
+            "enable_request_overhead": self.enable_request_overhead,
+            "request_duration_s": self.request_duration_s,
+            "response_duration_s": self.response_duration_s,
+            "request_timeout_s": self.request_timeout_s,
+            "request_listen_power_w": self.request_listen_power_w,
+        }
 
     def start_time_slot(
         self, task_dags: Dict[int, TaskDAG], priorities: Dict[int, List[int]]
@@ -410,6 +457,12 @@ class DITENEnv:
             local_finish_snapshot: Copy of device local finish times.
             server_finish_snapshot: Copy of server finish times.
         """
+        if self.enable_request_overhead:
+            self._schedule_request_edge_items(
+                server_groups, local_finish_snapshot, server_finish_snapshot
+            )
+            return
+
         for action, group in server_groups.items():
             server = self.servers[action - 1]
             server_available_time = server_finish_snapshot[server.id]
@@ -520,6 +573,139 @@ class DITENEnv:
                     server_available_time = finish_time
                     server_finish_snapshot[server.id] = server_available_time
 
+    def _request_start_time(self, item: dict) -> float:
+        """Start requests after predecessors finish; preserve parallelism."""
+        finishes = self.subtask_finish_times[item["device"].id]
+        predecessor_finishes = [
+            finishes[pred]
+            for pred, succ in item["task_dag"].edges
+            if succ == item["subtask_id"]
+        ]
+        return max([self.current_slot, *predecessor_finishes])
+
+    def _schedule_request_edge_items(
+        self, server_groups: Dict[int, List[dict]],
+        local_finish_snapshot: Dict[int, float],
+        server_finish_snapshot: Dict[int, float],
+    ) -> None:
+        """Admit reachable requests or resolve them before any task upload."""
+        for action, group in server_groups.items():
+            server = self.servers[action - 1]
+            server_available = server_finish_snapshot[server.id]
+            # Requests are admitted in response order with stable device ties.
+            group.sort(key=lambda item: (
+                self._request_start_time(item), item["device"].id
+            ))
+            for item in group:
+                device = item["device"]
+                request_start = self._request_start_time(item)
+                response_end = (
+                    request_start + self.request_duration_s
+                    + self.response_duration_s
+                )
+                l_start, l_end = self.connection_windows[(device.id, server.id)]
+                can_respond = l_start <= request_start and response_end < l_end
+                wait_time = (
+                    self.response_duration_s if can_respond
+                    else self.request_timeout_s
+                )
+                attempt_end = (
+                    request_start + self.request_duration_s + wait_time
+                )
+                item.update({
+                    "request_start_time": request_start,
+                    "request_finish_time": attempt_end,
+                    "request_time": self.request_duration_s + wait_time,
+                    "request_energy": (
+                        device.transmit_power * self.request_duration_s
+                    ),
+                    "request_wait_energy": (
+                        self.request_listen_power_w * wait_time
+                    ),
+                    "request_accepted_count": 0.0,
+                    "request_rejected_count": 0.0,
+                    "request_timeout_count": float(not can_respond),
+                })
+                if not can_respond:
+                    self._schedule_request_fallback(
+                        item, local_finish_snapshot, attempt_end
+                    )
+                    continue
+
+                # Estimate admission without charging speculative task transfer.
+                ready_time, tx_energy, transfer_time = (
+                    self._resolve_predecessor_ready_time(
+                        device, item["task_dag"], item["subtask_id"], action,
+                        earliest_transfer_time=attempt_end,
+                    )
+                )
+                comp_time, comp_energy = (
+                    self.network_env.calculate_edge_computation(
+                        item["subtask"].cpu_cycles, server.energy_coeff,
+                        self.server_estimated_power[server.id],
+                        server.compute_power,
+                    )
+                )
+                start_time = max(ready_time, server_available, l_start + 1e-9)
+                finish_time = start_time + comp_time
+                if finish_time >= l_end:
+                    item["request_rejected_count"] = 1.0
+                    self._schedule_request_fallback(
+                        item, local_finish_snapshot, attempt_end
+                    )
+                    continue
+
+                item.update({
+                    "request_accepted_count": 1.0,
+                    "resolved_action": action,
+                    "predecessor_ready_time": ready_time,
+                    "tx_energy": tx_energy,
+                    "transfer_time": transfer_time,
+                    "start_time": start_time, "finish_time": finish_time,
+                    "local_time": 0.0, "server_time": comp_time,
+                    "attempted_server_time": comp_time,
+                    "queue_or_wait_time": max(
+                        0.0, start_time - self.current_slot
+                    ),
+                    "penalty_time": 0.0,
+                    "f_est": self.server_estimated_power[server.id],
+                    "f_actual": server.compute_power, "e_comp": comp_energy,
+                })
+                server_available = finish_time
+                server_finish_snapshot[server.id] = finish_time
+
+    def _schedule_request_fallback(
+        self, item: dict, local_finish_snapshot: Dict[int, float],
+        attempt_end: float,
+    ) -> None:
+        """Charge only the resolved local path after rejection or timeout."""
+        device = item["device"]
+        ready_time, tx_energy, transfer_time = (
+            self._resolve_predecessor_ready_time(
+                device, item["task_dag"], item["subtask_id"], 0,
+                earliest_transfer_time=attempt_end,
+            )
+        )
+        comp_time, comp_energy = self.network_env.calculate_local_computation(
+            item["subtask"].cpu_cycles, device.energy_coeff,
+            self.device_estimated_power[device.id], device.compute_power,
+        )
+        start_time = max(ready_time, local_finish_snapshot[device.id])
+        finish_time = start_time + comp_time
+        local_finish_snapshot[device.id] = finish_time
+        item.update({
+            "rejected": True, "p_out": self.p_out_value,
+            "resolved_action": 0, "predecessor_ready_time": ready_time,
+            "tx_energy": tx_energy, "transfer_time": transfer_time,
+            "start_time": start_time, "finish_time": finish_time,
+            "local_time": comp_time, "server_time": 0.0,
+            "attempted_server_time": 0.0,
+            "queue_or_wait_time": max(0.0, start_time - self.current_slot),
+            "penalty_time": 0.0,
+            "f_est": self.device_estimated_power[device.id],
+            "f_actual": device.compute_power, "e_comp": comp_energy,
+        })
+
     def _finalize_pending_items(self, pending: List[dict]) -> List[float]:
         """Compute rewards and update per-device metrics for scheduled items.
 
@@ -571,7 +757,11 @@ class DITENEnv:
             subtask_latency = item["transfer_time"] + item["queue_or_wait_time"] + (
                 item["finish_time"] - item["start_time"]
             )
-            instant_energy = item["tx_energy"] + item["e_comp"]
+            instant_energy = (
+                item["tx_energy"] + item["e_comp"]
+                + item.get("request_energy", 0.0)
+                + item.get("request_wait_energy", 0.0)
+            )
 
             self.subtask_finish_times[device.id][current_subtask_id] = item["finish_time"]
             self.subtask_locations[device.id][current_subtask_id] = item["resolved_action"]
@@ -624,6 +814,16 @@ class DITENEnv:
                     "penalty_applied": float(1.0 if item["p_out"] != 0.0 else 0.0),
                     "penalty_time": float(item["penalty_time"]),
                     "fallback_local": float(1.0 if item.get("rejected", False) else 0.0),
+                    **{
+                        name: float(item.get(name, 0.0))
+                        for name in REQUEST_METRIC_FIELDS
+                    },
+                    "request_start_time": float(
+                        item.get("request_start_time", 0.0)
+                    ),
+                    "request_finish_time": float(
+                        item.get("request_finish_time", 0.0)
+                    ),
                 }
             )
 
@@ -648,7 +848,9 @@ class DITENEnv:
             self._update_connection_windows()
 
     def _resolve_predecessor_ready_time(
-        self, device: IndustrialDevice, task_dag: TaskDAG, current_subtask_id: int, action: int
+        self, device: IndustrialDevice, task_dag: TaskDAG,
+        current_subtask_id: int, action: int,
+        earliest_transfer_time: Optional[float] = None,
     ) -> Tuple[float, float, float]:
         """Compute earliest start time and transfer energy from predecessors.
 
@@ -657,6 +859,8 @@ class DITENEnv:
             task_dag: Task DAG for the device.
             current_subtask_id: Current subtask identifier.
             action: Requested execution location (0 local, >0 edge).
+            earliest_transfer_time: Delay task data movement until admission
+                or fallback. None preserves legacy transfer timing.
 
         Returns:
             Tuple of (predecessor_ready_time, transfer_energy, transfer_time).
@@ -665,6 +869,8 @@ class DITENEnv:
         # predecessor_ready_time = 0.0
         slot_start = self.current_slot_index * self.slot_duration
         predecessor_ready_time = slot_start
+        if earliest_transfer_time is not None:
+            predecessor_ready_time = max(slot_start, earliest_transfer_time)
         tx_energy = 0.0
         transfer_time = 0.0
         for pred_id in predecessors:
@@ -674,6 +880,8 @@ class DITENEnv:
                 trans_delay, trans_energy = self._calculate_result_transfer(
                     device, task_dag, pred_id, pred_location, action
                 )
+                if earliest_transfer_time is not None:
+                    pred_finish = max(pred_finish, earliest_transfer_time)
                 pred_finish += trans_delay
                 tx_energy += trans_energy
                 transfer_time += trans_delay
@@ -685,7 +893,11 @@ class DITENEnv:
                 device, action, task_dag.subtasks[current_subtask_id].data_size
             )
             # predecessor_ready_time += input_delay
-            predecessor_ready_time = slot_start + input_delay
+            upload_start = (
+                slot_start if earliest_transfer_time is None
+                else max(slot_start, earliest_transfer_time)
+            )
+            predecessor_ready_time = upload_start + input_delay
             tx_energy += input_energy
             transfer_time += input_delay
 

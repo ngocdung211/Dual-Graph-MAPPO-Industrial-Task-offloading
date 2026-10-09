@@ -278,6 +278,240 @@ def test_rejected_initial_offload_does_not_charge_upload_energy() -> None:
     assert env.last_step_metrics[0]["tx_energy"] == pytest.approx(0.0)
 
 
+def _request_case(cpu_cycles=1e6, data_size=0.0, window=(0.0, 1.0)):
+    """Prepare a deterministic one-subtask request admission scenario."""
+    env = _build_env(server_location=np.array([0.0, 1.0]))
+    env.enable_request_overhead = True
+    env.lambda5 = 1.0
+    env.p_out_value = -1.5
+    task = TaskDAG(1, t_max=1.0, e_max=1.0)
+    task.add_subtask(Subtask(1, cpu_cycles, data_size, 0.0))
+    env.reset({1: task}, {1: [1]})
+    env.connection_windows[(1, 1)] = window
+    return env
+
+
+def test_request_accepted_upload_starts_after_ack():
+    env = _request_case(data_size=1e6)
+    upload_time, upload_energy = env._calculate_input_upload(
+        env.devices[0], 1, 1e6
+    )
+    env.step([1])
+    metric = env.last_step_metrics[0]
+    assert metric["request_accepted_count"] == 1
+    assert metric["request_rejected_count"] == 0
+    assert metric["request_timeout_count"] == 0
+    assert metric["request_finish_time"] == pytest.approx(0.002)
+    assert metric["start_time"] == pytest.approx(0.002 + upload_time)
+    assert metric["energy"] == pytest.approx(upload_energy + 0.00055)
+    assert metric["comp_energy"] == 0
+    assert metric["p_out"] == 0
+
+
+def test_request_rejected_before_upload_pays_response_and_penalty_once():
+    env = _request_case(cpu_cycles=1e8, data_size=1e8, window=(0, 0.05))
+    env.step([1])
+    metric = env.last_step_metrics[0]
+    assert metric["request_rejected_count"] == 1
+    assert metric["request_timeout_count"] == 0
+    assert metric["start_time"] == pytest.approx(0.002)
+    assert metric["finish_time"] == pytest.approx(0.102)
+    assert metric["energy"] == pytest.approx(0.01055)
+    assert metric["tx_energy"] == 0
+    assert metric["p_out"] == -1.5
+    assert metric["penalty_applied"] == 1
+    assert metric["server_time"] == 0
+    assert env.server_finish_time[1] == 0
+
+
+def test_request_timeout_waits_from_end_of_transmission():
+    env = _request_case(data_size=1e8, window=(1, 1))
+    env.step([1])
+    metric = env.last_step_metrics[0]
+    assert metric["request_timeout_count"] == 1
+    assert metric["request_rejected_count"] == 0
+    assert metric["request_finish_time"] == pytest.approx(0.101)
+    assert metric["start_time"] == pytest.approx(0.101)
+    assert metric["finish_time"] == pytest.approx(0.102)
+    assert metric["request_wait_energy"] == pytest.approx(0.005)
+    assert metric["energy"] == pytest.approx(0.0056)
+    assert metric["tx_energy"] == 0
+    assert metric["p_out"] == -1.5
+    assert env.server_finish_time[1] == 0
+
+
+@pytest.mark.parametrize("window", [(0, 0.0015), (0.2, 1)])
+def test_missing_link_or_expired_response_causes_timeout(window):
+    env = _request_case(window=window)
+    env.step([1])
+    metric = env.last_step_metrics[0]
+    assert metric["request_timeout_count"] == 1
+    assert metric["request_finish_time"] == pytest.approx(0.101)
+
+
+def test_handshake_changes_execution_admission():
+    env = _request_case(cpu_cycles=1e8, data_size=1e5)
+    upload_time, _ = env._calculate_input_upload(env.devices[0], 1, 1e5)
+    window = (0, upload_time + 1e8 / 2.4e9 + 0.001)
+    env.connection_windows[(1, 1)] = window
+    legacy = _request_case(cpu_cycles=1e8, data_size=1e5, window=window)
+    legacy.enable_request_overhead = False
+    legacy.step([1])
+    env.step([1])
+    assert legacy.last_step_metrics[0]["action"] == 1
+    assert env.last_step_metrics[0]["request_rejected_count"] == 1
+    assert env.last_step_metrics[0]["action"] == 0
+    assert env.last_step_metrics[0]["tx_energy"] == 0
+
+
+def test_local_actions_do_not_pay_request_overhead():
+    env = _request_case()
+    env.step([0])
+    metric = env.last_step_metrics[0]
+    assert metric["energy"] == pytest.approx(0.0001)
+    assert metric["finish_time"] == pytest.approx(0.001)
+    assert metric["request_time"] == 0
+    assert metric["request_energy"] == 0
+    assert metric["request_wait_energy"] == 0
+
+
+def test_timeout_can_overlap_local_queue_but_energy_is_retained():
+    env = _request_case(window=(1, 1))
+    env.local_finish_time[1] = 0.5
+    env.step([1])
+    metric = env.last_step_metrics[0]
+    assert metric["start_time"] == pytest.approx(0.5)
+    assert metric["finish_time"] == pytest.approx(0.501)
+    assert metric["energy"] == pytest.approx(0.0056)
+
+
+def test_request_waits_for_predecessors_without_serializing_dag_branches():
+    env = _request_case()
+    task = TaskDAG(1, 1, 1)
+    task.add_subtask(Subtask(1, 1e8, 0, 0))
+    task.add_subtask(Subtask(2, 1e6, 0, 0))
+    task.add_subtask(Subtask(3, 1e6, 0, 0))
+    task.add_dependency(1, 2)
+    task.add_dependency(1, 3)
+    env.reset({1: task}, {1: [1, 2, 3]})
+    env.connection_windows[(1, 1)] = (1, 1)
+    env.step([0])
+    env.step([1])
+    assert env.last_step_metrics[0]["request_start_time"] == pytest.approx(0.1)
+    assert env.last_step_metrics[0]["finish_time"] == pytest.approx(0.202)
+    env.step([1])
+    assert env.last_step_metrics[0]["request_start_time"] == pytest.approx(0.1)
+
+
+def test_disabled_request_parameters_preserve_legacy_trajectory():
+    first = _build_env(np.array([0.0, 1.0]))
+    second = _build_env(np.array([0.0, 1.0]))
+    second.request_duration_s = 0.2
+    second.response_duration_s = 0.1
+    second.request_timeout_s = 0.3
+    second.request_listen_power_w = 10
+    states = [env.reset({1: _build_task_dag()}, {1: [1, 2]})
+              for env in (first, second)]
+    np.testing.assert_array_equal(*states)
+    for action in [1, 0]:
+        result_a = first.step([action])
+        result_b = second.step([action])
+        np.testing.assert_array_equal(result_a[0], result_b[0])
+        assert result_a[1:] == result_b[1:]
+        assert first.last_step_metrics == second.last_step_metrics
+
+
+def test_queue_rejection_does_not_reserve_server_resources():
+    env = _request_case(window=(0, 0.1))
+    env.server_finish_time[1] = 0.2
+    env.step([1])
+    metric = env.last_step_metrics[0]
+    assert metric["request_rejected_count"] == 1
+    assert metric["finish_time"] == pytest.approx(0.003)
+    assert env.server_finish_time[1] == 0.2
+
+
+def test_request_admission_reserves_only_successful_edge_work():
+    first = _build_env(np.array([0.0, 1.0]))
+    second_device = IndustrialDevice(
+        2, np.array([0.0, 0.0]), 1e9, 0.5, 1e-28, 1.0
+    )
+    env = DITENEnv(
+        [first.devices[0], second_device], first.servers, first.network_env,
+        enable_request_overhead=True, time_slots=1,
+        local_estimation_error=0, edge_estimation_error=0,
+        lambda5=1, p_out_value=-1.5,
+    )
+    tasks = {}
+    for device in env.devices:
+        task = TaskDAG(device.id, 1, 1)
+        task.add_subtask(Subtask(1, 2.4e8, 0, 0))
+        tasks[device.id] = task
+    env.reset(tasks, {1: [1], 2: [1]})
+    env.connection_windows = {(1, 1): (0, 0.15), (2, 1): (0, 0.15)}
+    env.step([1, 1])
+    from utils.comparison.diagnostics import _summarize_step_metrics
+
+    summary = _summarize_step_metrics(env.last_step_metrics)
+    assert summary["requested_edge_count"] == 2
+    assert summary["request_accepted_count"] == 1
+    assert summary["request_rejected_count"] == 1
+    assert summary["request_timeout_count"] == 0
+    assert summary["resolved_edge_count"] == 1
+    assert summary["penalty_count"] == 1
+    assert env.server_finish_time[1] == pytest.approx(0.102)
+
+
+def test_request_checkpoint_evaluation_restores_settings_and_legacy_default(
+    monkeypatch,
+):
+    from utils.comparison.evaluation import evaluate_algorithm_checkpoint
+    from utils.paper_config import PAPER_PARAMS
+
+    class FixedEdgeAgent:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        def select_greedy_action(self, state):
+            del state
+            return 1
+
+    class FixedWorkload:
+        def reseed(self, seed):
+            del seed
+
+        def get_random_task_parameters(self):
+            return {
+                f"subtask_{index}": {
+                    "cpu_cycles": 1e6, "data_size": 0, "result_size": 0
+                } for index in range(1, 6)
+            }
+
+    monkeypatch.setitem(PAPER_PARAMS["confirmed"], "time_slots", 1)
+    physical = _build_env(np.array([100.0, 100.0]))
+    checkpoint = {"agents": [{}]}
+    settings = _request_case().get_request_overhead_config()
+    common = {
+        "agent_config": {"class": FixedEdgeAgent},
+        "devices": physical.devices, "servers": physical.servers,
+        "network_env": physical.network_env, "data_loader": FixedWorkload(),
+        "priority_model": None, "num_episodes": 1, "experiment_seed": 190,
+        "fixed_priority_order": [1, 2, 3, 4, 5],
+    }
+    legacy = evaluate_algorithm_checkpoint(checkpoint=checkpoint, **common)
+    restored = evaluate_algorithm_checkpoint(
+        checkpoint={**checkpoint, "request_overhead_config": settings},
+        **common,
+    )
+    overridden = evaluate_algorithm_checkpoint(
+        checkpoint=checkpoint, request_overhead_config=settings, **common
+    )
+    assert legacy["request_timeout_count"] == [0]
+    assert restored["request_timeout_count"] == [5]
+    assert restored["energy"][0] > legacy["energy"][0]
+    assert restored == overridden
+
+
 def test_step_reward_uses_updated_accumulated_costs() -> None:
     """Eq. 24 accumulated terms should include the current subtask."""
     env = _build_env(server_location=np.array([0.0, 1.0]))

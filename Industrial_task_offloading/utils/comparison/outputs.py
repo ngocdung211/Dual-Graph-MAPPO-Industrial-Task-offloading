@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 
+from environment.diten_env import REQUEST_METRIC_FIELDS
+from utils.comparison.diagnostics import EPISODE_DIAGNOSTIC_FIELDS
 from utils.reporting.plotter2 import DITENPlotter2
 
 
@@ -127,6 +129,7 @@ def build_last_training_state_line(
     reward_weights: Optional[Dict[str, float]] = None,
     maddpg_updates_per_episode: Optional[int] = None,
     task_priority: Optional[str] = None,
+    request_overhead_config: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
     """Build one final training row with optional effective run settings."""
 
@@ -162,7 +165,10 @@ def build_last_training_state_line(
         "graph_warmup_time_s": last_value("graph_warmup_time"),
         "graph_warmup_loss": last_value("graph_warmup_loss"),
         "graph_warmup_count": int(round(last_value("graph_warmup_count"))),
+        **{name: last_value(name) for name in REQUEST_METRIC_FIELDS},
     }
+    if request_overhead_config is not None:
+        row["request_overhead_config"] = dict(request_overhead_config)
     if experiment_note:
         row["experiment_note"] = experiment_note
     if experiment_seed is not None:
@@ -196,6 +202,7 @@ def build_model_checkpoint(
     experiment_note: str = "",
     experiment_seed: Optional[int] = None,
     reward_weights: Optional[Dict[str, float]] = None,
+    request_overhead_config: Optional[Dict[str, object]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Build a serializable checkpoint payload for a trainable algorithm."""
     agent_states = [
@@ -236,6 +243,8 @@ def build_model_checkpoint(
         checkpoint["experiment_seed"] = int(experiment_seed)
     if reward_weights is not None:
         checkpoint["reward_weights"] = dict(reward_weights)
+    if request_overhead_config is not None:
+        checkpoint["request_overhead_config"] = dict(request_overhead_config)
     if topology_metrics is not None:
         checkpoint["topology_metrics"] = topology_metrics
     if graph_node_feature_dim is not None or graph_edge_feature_dim is not None:
@@ -333,12 +342,19 @@ def _write_episode_history_csv(
                 "reward",
                 "delay_s",
                 "energy_j",
+                *EPISODE_DIAGNOSTIC_FIELDS,
+                "request_overhead_config",
+                "adaptation_version",
             ]
         )
         for model_name, rewards in reward_by_model.items():
             metadata = metadata_by_model.get(model_name, {})
             delays = delay_by_model.get(model_name, [])
             energies = energy_by_model.get(model_name, [])
+            diagnostics = {
+                name: raw_results.get(name, {}).get(model_name, [])
+                for name in EPISODE_DIAGNOSTIC_FIELDS
+            }
             for episode_index, reward in enumerate(rewards):
                 writer.writerow(
                     [
@@ -352,6 +368,15 @@ def _write_episode_history_csv(
                         energies[episode_index]
                         if episode_index < len(energies)
                         else "",
+                        *[
+                            diagnostics[name][episode_index]
+                            if episode_index < len(diagnostics[name]) else ""
+                            for name in EPISODE_DIAGNOSTIC_FIELDS
+                        ],
+                        json.dumps(metadata.get("request_overhead_config", {})),
+                        metadata.get("agent_kwargs", {}).get(
+                            "adaptation_version", ""
+                        ),
                     ]
                 )
 

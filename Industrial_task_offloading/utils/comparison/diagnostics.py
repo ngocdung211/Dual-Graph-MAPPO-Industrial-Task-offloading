@@ -4,8 +4,15 @@ from typing import Dict, List, Sequence
 
 import numpy as np
 
+from environment.diten_env import REQUEST_METRIC_FIELDS
 from environment.system_model import EdgeServer, IndustrialDevice
 from utils.paper_config import PAPER_PARAMS
+
+
+EPISODE_DIAGNOSTIC_FIELDS = (
+    "requested_local_count", "requested_edge_count", "resolved_local_count",
+    "resolved_edge_count", "penalty_count", *REQUEST_METRIC_FIELDS,
+)
 
 
 def summarize_physical_compute(
@@ -52,6 +59,7 @@ def _summarize_step_metrics(step_metrics: Sequence[Dict[str, float]]) -> Dict[st
         "requested_edge_count": 0.0,
         "resolved_local_count": 0.0,
         "resolved_edge_count": 0.0,
+        **{name: 0.0 for name in REQUEST_METRIC_FIELDS},
     }
     for metric in step_metrics:
         requested_action = int(metric.get("requested_action", -1.0))
@@ -63,6 +71,8 @@ def _summarize_step_metrics(step_metrics: Sequence[Dict[str, float]]) -> Dict[st
         summary["queue_or_wait_time"] += float(metric.get("queue_or_wait_time", 0.0))
         summary["penalty_time"] += float(metric.get("penalty_time", 0.0))
         summary["penalty_count"] += float(metric.get("penalty_applied", 0.0))
+        for name in REQUEST_METRIC_FIELDS:
+            summary[name] += float(metric.get(name, 0.0))
         if requested_action == 0:
             summary["requested_local_count"] += 1.0
         elif requested_action > 0:
@@ -104,6 +114,19 @@ def _format_diagnostic_summary(algo_name: str, episode_number: int, history: Dic
         f"  Timing/device-task: local={local_time:.3f}s server={server_time:.3f}s "
         f"transfer={transfer_time:.3f}s wait={wait_time:.3f}s"
     )
+    outcome_count = sum(
+        history.get(name, [0.0])[-1] for name in REQUEST_METRIC_FIELDS[3:]
+    )
+    if outcome_count:
+        summary += (
+            "\n  Requests: accepted/rejected/timeout="
+            f"{history['request_accepted_count'][-1]:.0f}/"
+            f"{history['request_rejected_count'][-1]:.0f}/"
+            f"{history['request_timeout_count'][-1]:.0f} "
+            f"overhead={history['request_time'][-1]:.6f}s/device-task "
+            f"energy={history['request_energy'][-1]:.6f}+"
+            f"{history['request_wait_energy'][-1]:.6f}J/device-task"
+        )
     graph_transition_count = history.get("graph_transition_count", [0.0])[-1]
     if graph_transition_count > 0:
         graph_build_time = history["graph_build_time"][-1]

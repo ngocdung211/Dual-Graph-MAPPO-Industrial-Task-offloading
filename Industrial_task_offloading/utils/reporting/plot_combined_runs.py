@@ -51,6 +51,7 @@ MODEL_LABELS = {
     "Mask MAPPO": "Mask MAPPO (independent)",
     "Graph-GAT Warmup MAPPO": "Graph MAPPO + warmup",
     "Graph-GAT Warmup Mask MAPPO": "Graph Mask MAPPO + warmup",
+    "GATMA-Adapted v3" : "GATMA",
 }
 HIGHLIGHT_MODELS = frozenset(
     {"Graph-GAT Mask MAPPO", "Graph-GAT Warmup Mask MAPPO"}
